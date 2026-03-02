@@ -58,7 +58,10 @@ class ForumTicketMessage(Base):
     role = Column(String, nullable=False)  # ForumTicketMessageRole
     content = Column(Text, nullable=False)
     message_id = Column(Integer, nullable=True)
-    
+    # Медиа-вложения (фото)
+    media_type = Column(String(50), nullable=True)  # 'photo', 'document' и т.д.
+    media_file_id = Column(String(512), nullable=True)  # Telegram file_id
+
     created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(UTC), nullable=False)
 
     def __repr__(self):

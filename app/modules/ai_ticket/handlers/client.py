@@ -1,8 +1,9 @@
 """
-Client-side handler for the DonMatteo-AI-Tiket module.
+Client-side handler для модуля DonMatteo-AI-Tiket.
 
-Intercepts user messages when SUPPORT_SYSTEM_MODE == 'ai_tiket',
-creates Forum topics, calls AI, and routes replies.
+Перехватывает сообщения пользователя при SUPPORT_SYSTEM_MODE == 'ai_tiket',
+создаёт Forum-топики, вызывает AI, маршрутизирует ответы.
+Поддержка фото-вложений.
 """
 
 import structlog
@@ -17,7 +18,8 @@ from app.modules.ai_ticket.services import ai_manager
 from app.modules.ai_ticket.services.forum_service import ForumService
 from app.modules.ai_ticket.services import prompt_service
 from app.localization.texts import get_texts
-from app.modules.ai_ticket.utils.keyboards import get_manager_kb, get_user_navigation_kb
+from app.modules.ai_ticket.utils.keyboards import get_manager_kb, get_user_navigation_kb, get_user_reply_kb
+from app.modules.ai_ticket.utils.formatting import sanitize_ai_response
 from app.services.system_settings_service import BotConfigurationService
 
 logger = structlog.get_logger(__name__)
@@ -31,13 +33,22 @@ async def handle_ai_ticket_message(
     db: AsyncSession,
     db_user: User,
 ) -> None:
-    """Main entry point for AI support logic (callback from _ai_ticket_message_proxy)."""
+    """Основная точка входа для AI-поддержки (callback из _ai_ticket_message_proxy). Поддерживает фото."""
     logger.info('ai_ticket_client.handle_message_started', chat_id=message.chat.id, user_id=db_user.id)
     user_text = message.text or message.caption or ''
-    if not user_text.strip():
+
+    # Извлекаем медиа
+    media_type = None
+    media_file_id = None
+    if message.photo:
+        media_type = 'photo'
+        media_file_id = message.photo[-1].file_id
+
+    # Пустое сообщение без медиа — не обрабатываем
+    if not user_text.strip() and not media_file_id:
         return
 
-    # 1. Get or create ticket
+    # 1. Создаём/получаем тикет
     texts = get_texts(db_user.language)
     try:
         ticket = await ForumService.get_or_create_ticket(db, bot, db_user.id, db_user.full_name)
@@ -46,36 +57,53 @@ async def handle_ai_ticket_message(
         await message.answer(texts.t('TICKET_CREATE_ERROR', '⚠️ Ошибка инициализации тикета. Мы скоро свяжемся с вами.'))
         return
 
-    # 2. Get Forum Group ID
+    # 2. ID форум-группы (опциональный — без него AI всё равно отвечает)
     forum_group_id_str = BotConfigurationService.get_current_value('SUPPORT_AI_FORUM_ID')
-    if not forum_group_id_str:
-        logger.error('ai_ticket_client.no_forum_id')
-        return
-    forum_group_id = int(forum_group_id_str)
+    forum_group_id = int(forum_group_id_str) if forum_group_id_str else None
+    if not forum_group_id:
+        logger.warning('ai_ticket_client.no_forum_id — форум-группа не настроена, пересылка менеджерам отключена')
 
-    # 3. Check AI state
+    # 3. Проверяем состояние AI
     ai_enabled_global = BotConfigurationService.get_current_value('SUPPORT_AI_ENABLED')
     if isinstance(ai_enabled_global, str):
         ai_enabled_global = ai_enabled_global.lower() in ('true', '1', 'on', 'yes')
-    
+
     should_run_ai = ticket.ai_enabled and ai_enabled_global
 
-    # 4. Save user message in DB
-    await ForumService.save_message(db=db, ticket_id=ticket.id, role='user', content=user_text)
+    # 4. Сохраняем сообщение пользователя с медиа
+    await ForumService.save_message(
+        db=db,
+        ticket_id=ticket.id,
+        role='user',
+        content=user_text or '[фото]',
+        media_type=media_type,
+        media_file_id=media_file_id,
+    )
 
-    # 5. Forward user message to forum topic with buttons
+    # 5. Пересылаем сообщение в форум-топик менеджеру (с медиа + кнопки управления)
     try:
-        await bot.send_message(
-            chat_id=forum_group_id,
-            message_thread_id=ticket.telegram_topic_id,
-            text=f"👤 <b>Сообщение от пользователя {db_user.full_name}:</b>\n\n{user_text}",
-            parse_mode='HTML',
-            reply_markup=get_manager_kb(ticket.id, lang='ru', ai_enabled=ticket.ai_enabled)
-        )
+        if media_type == 'photo' and media_file_id:
+            caption_text = f"👤 <b>Сообщение от пользователя {db_user.full_name}:</b>\n\n{user_text}" if user_text else f"👤 <b>Фото от пользователя {db_user.full_name}</b>"
+            await bot.send_photo(
+                chat_id=forum_group_id,
+                message_thread_id=ticket.telegram_topic_id,
+                photo=media_file_id,
+                caption=caption_text,
+                parse_mode='HTML',
+                reply_markup=get_manager_kb(ticket.id, ai_enabled=ticket.ai_enabled),
+            )
+        else:
+            await bot.send_message(
+                chat_id=forum_group_id,
+                message_thread_id=ticket.telegram_topic_id,
+                text=f"👤 <b>Сообщение от пользователя {db_user.full_name}:</b>\n\n{user_text}",
+                parse_mode='HTML',
+                reply_markup=get_manager_kb(ticket.id, ai_enabled=ticket.ai_enabled),
+            )
     except Exception as e:
         logger.error('ai_ticket_client.forward_to_manager_failed', error=str(e))
 
-    # 6. Immediate feedback to user
+    # 6. Мгновенная обратная связь пользователю
     status_text = texts.t('AI_TICKET_MESSAGE_RECEIVED', '⏳ <b>Ваше сообщение получено.</b>')
     if should_run_ai:
         status_text += "\n<i>ИИ-ассистент обдумывает ответ...</i>"
@@ -85,19 +113,31 @@ async def handle_ai_ticket_message(
     status_msg = await message.answer(
         status_text,
         parse_mode='HTML',
-        reply_markup=get_user_navigation_kb(ticket.id, lang=db_user.language, show_call_manager=ticket.ai_enabled)
+        reply_markup=get_user_reply_kb(ticket.id, lang=db_user.language, show_call_manager=ticket.ai_enabled)
     )
 
     if not should_run_ai:
+        # AI отключён — уведомляем менеджера в топике
+        if forum_group_id and ticket.telegram_topic_id:
+            try:
+                await bot.send_message(
+                    chat_id=forum_group_id,
+                    message_thread_id=ticket.telegram_topic_id,
+                    text='⚠️ <b>AI-ассистент отключён.</b>\nПожалуйста, ответьте пользователю вручную или включите AI.',
+                    parse_mode='HTML',
+                    reply_markup=get_manager_kb(ticket.id, lang='ru', ai_enabled=False),
+                )
+            except Exception as e:
+                logger.error('ai_ticket_client.manager_ai_disabled_notify_failed', error=str(e))
         await db.commit()
         return
 
-    # 7. AI response processing with failover
+    # 7. AI обработка с фоллбеком
     try:
         await ai_manager.ensure_providers_exist(db)
         system_prompt = await prompt_service.get_system_prompt(db)
 
-        # FAQ & User Context
+        # FAQ и контекст пользователя
         faq_articles = await ForumService.get_active_faq_articles(db)
         faq_context = ForumService.format_faq_context(faq_articles)
         if faq_context:
@@ -109,47 +149,48 @@ async def handle_ai_ticket_message(
         if user_context_parts:
             system_prompt += '\n\n## КОНТЕКСТ ПОЛЬЗОВАТЕЛЯ:\n' + '\n'.join(user_context_parts)
 
-        # History and Generation
+        # История и генерация
         history = await ForumService.get_conversation_history(db, ticket.id)
         messages_ai = [{'role': 'system', 'content': system_prompt}] + history
 
         ai_response = await ai_manager.generate_ai_response(db=db, messages=messages_ai)
 
         if ai_response:
-            # Save and send to user
+            # Сохраняем оригинал, отправляем санитизированную версию
             await ForumService.save_message(db=db, ticket_id=ticket.id, role='ai', content=ai_response)
-            
+            safe_response = sanitize_ai_response(ai_response)
+
             await status_msg.edit_text(
-                f'🤖 <b>AI-ассистент:</b>\n\n{ai_response}',
+                f'🤖 <b>AI-ассистент:</b>\n\n{safe_response}',
                 parse_mode='HTML',
-                reply_markup=get_user_navigation_kb(ticket.id, lang=db_user.language, show_call_manager=ticket.ai_enabled)
+                reply_markup=get_user_reply_kb(ticket.id, lang=db_user.language, show_call_manager=ticket.ai_enabled)
             )
 
-            # Duplicate in Forum
+            # Дублируем в форум
             try:
                 await bot.send_message(
                     chat_id=forum_group_id,
                     message_thread_id=ticket.telegram_topic_id,
-                    text=f'🤖 <b>AI-Ответ</b>:\n\n{ai_response}',
+                    text=f'🤖 <b>AI-Ответ</b>:\n\n{safe_response}',
                     parse_mode='HTML',
                 )
             except Exception as e:
                 logger.error('ai_ticket_client.forum_copy_failed', error=str(e))
         else:
-            # AI failed or returned None
+            # AI не сработал
             await status_msg.edit_text(
                 texts.t('AI_TICKET_UNAVAILABLE', "🤖 <b>AI-ассистент временно недоступен.</b>\n\nВаше сообщение передано менеджерам. Ожидайте ответа специалиста."),
                 parse_mode='HTML',
-                reply_markup=get_user_navigation_kb(ticket.id, lang=db_user.language, show_call_manager=ticket.ai_enabled)
+                reply_markup=get_user_reply_kb(ticket.id, lang=db_user.language, show_call_manager=ticket.ai_enabled)
             )
-            
+
     except Exception as e:
         logger.error('ai_ticket_client.ai_processing_failed', error=str(e))
         try:
             await status_msg.edit_text(
                 texts.t('AI_TICKET_ERROR', "⚠️ <b>Сообщение доставлено поддержке.</b>\n\nМы ответим вам в ближайшее время."),
                 parse_mode='HTML',
-                reply_markup=get_user_navigation_kb(ticket.id, lang=db_user.language, show_call_manager=ticket.ai_enabled)
+                reply_markup=get_user_reply_kb(ticket.id, lang=db_user.language, show_call_manager=ticket.ai_enabled)
             )
         except Exception:
             pass
@@ -163,7 +204,7 @@ async def handle_call_manager(
     db: AsyncSession,
     db_user: User,
 ) -> None:
-    """User pressed 'Позвать менеджера' — disable AI and notify."""
+    """Пользователь нажал 'Позвать менеджера' — отключаем AI и уведомляем."""
     data = callback.data or ''
     parts = data.split(':')
     if len(parts) != 2:
@@ -179,7 +220,7 @@ async def handle_call_manager(
     await ForumService.disable_ai(db, ticket_id)
     await db.commit()
 
-    # REMOVE BUTTON FROM SOURCE MESSAGE TO PREVENT SPAM
+    # Убираем кнопку вызова менеджера
     try:
         await callback.message.edit_reply_markup(
             reply_markup=get_user_navigation_kb(ticket_id, lang=db_user.language, show_call_manager=False)
@@ -187,7 +228,7 @@ async def handle_call_manager(
     except Exception:
         pass
 
-    # Notify in Forum topic
+    # Уведомляем в форум-топик
     forum_group_id_str = BotConfigurationService.get_current_value('SUPPORT_AI_FORUM_ID')
     if forum_group_id_str:
         from app.database.models_ai_ticket import ForumTicket
@@ -215,7 +256,7 @@ async def handle_call_manager(
 
 
 def register_client_handlers(dp: Dispatcher) -> None:
-    """Register the 'Call manager' callback."""
+    """Регистрация callback 'Вызвать менеджера'."""
     dp.callback_query.register(
         handle_call_manager,
         F.data.startswith('ai_ticket_call_manager:'),

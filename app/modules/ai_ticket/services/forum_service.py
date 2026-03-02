@@ -85,13 +85,17 @@ class ForumService:
         role: str,
         content: str,
         message_id: int | None = None,
+        media_type: str | None = None,
+        media_file_id: str | None = None,
     ) -> ForumTicketMessage:
-        """Save a message to the ticket history."""
+        """Сохранить сообщение в историю тикета (с опциональным медиа)."""
         msg = ForumTicketMessage(
             ticket_id=ticket_id,
             role=role,
             content=content,
             message_id=message_id,
+            media_type=media_type,
+            media_file_id=media_file_id,
         )
         db.add(msg)
         await db.flush()

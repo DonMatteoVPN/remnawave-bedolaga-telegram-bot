@@ -1279,6 +1279,8 @@ async def view_forum_ticket(callback: types.CallbackQuery, db_user: User, db: As
     messages = msg_res_all.scalars().all()
 
     message_blocks: list[str] = []
+    has_photos = False
+    from app.modules.ai_ticket.utils.formatting import sanitize_ai_response as _sanitize
     if messages:
         message_blocks.append(f'💬 Сообщения ({len(messages)}):\n\n')
         for msg in messages:
@@ -1289,23 +1291,64 @@ async def view_forum_ticket(callback: types.CallbackQuery, db_user: User, db: As
                 'system': '⚙️ System'
             }
             sender = role_map.get(msg.role, msg.role)
-            block = f'{sender} ({format_local_datetime(msg.created_at, "%d.%m %H:%M")}):\n{msg.content}\n\n'
+            # Санитизация контента (убираем <think>, конвертируем Markdown в HTML)
+            content = msg.content or ''
+            content = _sanitize(content)
+            block = f'{sender} ({format_local_datetime(msg.created_at, "%d.%m %H:%M")}):\n{content}\n\n'
+            # Индикация медиа-вложений
+            if getattr(msg, 'media_type', None) == 'photo':
+                block += '📎 Вложение: фото\n\n'
+                has_photos = True
             message_blocks.append(block)
-            
+
     pages = _split_text_into_pages(header, message_blocks, max_len=3500)
     total_pages = len(pages)
     page = min(page, total_pages)
 
-    # Keyboard logic
+    # Клавиатура (как в оригинальном get_ticket_view_keyboard)
     keyboard = types.InlineKeyboardMarkup(inline_keyboard=[])
-    
+
     if ticket.status == 'open':
+        # Кнопка «Ответить» — как в оригинале
         keyboard.inline_keyboard.append([
-            types.InlineKeyboardButton(text=texts.t('CLOSE_TICKET_BUTTON', '❌ Закрыть тикет'), callback_data=f'close_forum_ticket_{ticket.id}')
+            types.InlineKeyboardButton(
+                text=texts.t('REPLY_TO_TICKET', '💬 Ответить'),
+                callback_data=f'reply_forum_ticket_{ticket.id}'
+            )
         ])
-    
+        # Кнопка «Вызвать менеджера» — если AI ещё включён (менеджер не вызван)
+        if ticket.ai_enabled:
+            keyboard.inline_keyboard.append([
+                types.InlineKeyboardButton(
+                    text=texts.t('AI_TICKET_CALL_MANAGER', '🆘 Вызвать менеджера'),
+                    callback_data=f'ai_ticket_call_manager:{ticket.id}'
+                )
+            ])
+        # Кнопка «Закрыть тикет»
+        keyboard.inline_keyboard.append([
+            types.InlineKeyboardButton(
+                text=texts.t('CLOSE_TICKET', '🔒 Закрыть тикет'),
+                callback_data=f'close_forum_ticket_{ticket.id}'
+            )
+        ])
+
+    # Кнопка вложений (если есть)
+    if has_photos:
+        try:
+            keyboard.inline_keyboard.insert(0, [
+                types.InlineKeyboardButton(
+                    text=texts.t('TICKET_ATTACHMENTS', '📎 Вложения'),
+                    callback_data=f'forum_ticket_attachments_{ticket.id}'
+                )
+            ])
+        except Exception:
+            pass
+
     keyboard.inline_keyboard.append([
         types.InlineKeyboardButton(text=texts.BACK, callback_data='my_tickets' if ticket.status == 'open' else 'my_tickets_closed')
+    ])
+    keyboard.inline_keyboard.append([
+        types.InlineKeyboardButton(text=texts.t('MAIN_MENU_BUTTON', '🏠 Главное меню'), callback_data='back_to_menu')
     ])
 
     # Pagination row
@@ -1320,13 +1363,13 @@ async def view_forum_ticket(callback: types.CallbackQuery, db_user: User, db: As
 
     page_text = pages[page - 1]
     try:
-        await callback.message.edit_text(page_text, reply_markup=keyboard)
+        await callback.message.edit_text(page_text, reply_markup=keyboard, parse_mode='HTML')
     except Exception:
         try:
             await callback.message.delete()
         except Exception:
             pass
-        await callback.message.answer(page_text, reply_markup=keyboard)
+        await callback.message.answer(page_text, reply_markup=keyboard, parse_mode='HTML')
     await callback.answer()
 
 
@@ -1350,6 +1393,331 @@ async def close_forum_ticket_handler(callback: types.CallbackQuery, db_user: Use
     texts = get_texts(db_user.language)
     await callback.answer(texts.t('TICKET_CLOSED_CONFIRM', 'Тикет успешно закрыт.'), show_alert=True)
     await show_my_tickets(callback, db_user, db)
+
+
+async def reply_to_forum_ticket(callback: types.CallbackQuery, state: FSMContext, db_user: User):
+    """Начать ответ на ForumTicket (аналог reply_to_ticket для оригинала)"""
+    ticket_id = int(callback.data.replace('reply_forum_ticket_', ''))
+    await state.update_data(forum_ticket_id=ticket_id)
+
+    texts = get_texts(db_user.language)
+
+    try:
+        await callback.message.edit_text(
+            texts.t('TICKET_REPLY_INPUT', 'Введите ваш ответ:'),
+            reply_markup=types.InlineKeyboardMarkup(
+                inline_keyboard=[
+                    [
+                        types.InlineKeyboardButton(
+                            text=texts.t('CANCEL_REPLY', '❌ Отменить'),
+                            callback_data='cancel_forum_ticket_reply'
+                        )
+                    ]
+                ]
+            ),
+        )
+    except TelegramBadRequest:
+        try:
+            await callback.message.delete()
+        except Exception:
+            pass
+        await callback.message.answer(
+            texts.t('TICKET_REPLY_INPUT', 'Введите ваш ответ:'),
+            reply_markup=types.InlineKeyboardMarkup(
+                inline_keyboard=[
+                    [
+                        types.InlineKeyboardButton(
+                            text=texts.t('CANCEL_REPLY', '❌ Отменить'),
+                            callback_data='cancel_forum_ticket_reply'
+                        )
+                    ]
+                ]
+            ),
+        )
+
+    await state.set_state('ai_ticket_waiting_reply')
+    await callback.answer()
+
+
+async def handle_forum_ticket_reply(message: types.Message, state: FSMContext, db_user: User, db: AsyncSession):
+    """Обработать ответ на ForumTicket от пользователя. Поддерживает фото."""
+    current_state = await state.get_state()
+    if current_state != 'ai_ticket_waiting_reply':
+        return
+
+    # Антиспам
+    try:
+        data_rl = await state.get_data()
+        last_ts = data_rl.get('rl_ts_forum_reply')
+        now_ts = time.time()
+        if last_ts and (now_ts - float(last_ts)) < 2:
+            return
+        await state.update_data(rl_ts_forum_reply=now_ts)
+    except Exception:
+        pass
+
+    # Извлечение текста и медиа
+    reply_text = (message.text or message.caption or '').strip()
+    if len(reply_text) > 400:
+        reply_text = reply_text[:400]
+    media_type = None
+    media_file_id = None
+    if message.photo:
+        media_type = 'photo'
+        media_file_id = message.photo[-1].file_id
+
+    # Валидация: минимум 5 символов или наличие фото
+    if len(reply_text) < 5 and not media_file_id:
+        texts = get_texts(db_user.language)
+        await message.answer(
+            texts.t('TICKET_REPLY_TOO_SHORT', 'Ответ должен содержать минимум 5 символов. Попробуйте еще раз:')
+        )
+        return
+
+    data = await state.get_data()
+    forum_ticket_id = data.get('forum_ticket_id')
+    if not forum_ticket_id:
+        texts = get_texts(db_user.language)
+        await message.answer(texts.t('TICKET_REPLY_ERROR', 'Ошибка: не найден ID тикета.'))
+        await state.clear()
+        return
+
+    from app.modules.ai_ticket.services.forum_service import ForumService
+    from app.database.models_ai_ticket import ForumTicket
+    from app.services.system_settings_service import BotConfigurationService
+    from app.modules.ai_ticket.services import ai_manager
+    from app.modules.ai_ticket.services import prompt_service
+    from app.modules.ai_ticket.utils.keyboards import get_user_reply_kb
+
+    try:
+        # Проверяем тикет
+        stmt = select(ForumTicket).where(ForumTicket.id == forum_ticket_id)
+        result = await db.execute(stmt)
+        ticket = result.scalars().first()
+
+        if not ticket or ticket.user_id != db_user.id:
+            texts = get_texts(db_user.language)
+            await message.answer(texts.t('TICKET_NOT_FOUND', 'Тикет не найден.'))
+            await state.clear()
+            return
+
+        if ticket.status != 'open':
+            texts = get_texts(db_user.language)
+            await message.answer(texts.t('TICKET_CLOSED', '✅ Тикет закрыт.'))
+            await state.clear()
+            return
+
+        # Сохраняем сообщение с медиа
+        await ForumService.save_message(
+            db=db,
+            ticket_id=ticket.id,
+            role='user',
+            content=reply_text or '[фото]',
+            media_type=media_type,
+            media_file_id=media_file_id,
+        )
+
+        # Пересылаем в форум-топик менеджеру с кнопками управления
+        forum_group_id_str = BotConfigurationService.get_current_value('SUPPORT_AI_FORUM_ID')
+        if forum_group_id_str and ticket.telegram_topic_id:
+            from app.modules.ai_ticket.utils.keyboards import get_manager_kb
+            try:
+                if media_type == 'photo' and media_file_id:
+                    caption_text = f"👤 <b>Ответ от пользователя {db_user.full_name}:</b>\n\n{reply_text}" if reply_text else f"👤 <b>Фото от пользователя {db_user.full_name}</b>"
+                    await message.bot.send_photo(
+                        chat_id=int(forum_group_id_str),
+                        message_thread_id=ticket.telegram_topic_id,
+                        photo=media_file_id,
+                        caption=caption_text,
+                        parse_mode='HTML',
+                        reply_markup=get_manager_kb(ticket.id, ai_enabled=ticket.ai_enabled),
+                    )
+                else:
+                    await message.bot.send_message(
+                        chat_id=int(forum_group_id_str),
+                        message_thread_id=ticket.telegram_topic_id,
+                        text=f"👤 <b>Ответ от пользователя {db_user.full_name}:</b>\n\n{reply_text}",
+                        parse_mode='HTML',
+                        reply_markup=get_manager_kb(ticket.id, ai_enabled=ticket.ai_enabled),
+                    )
+            except Exception as e:
+                logger.error('forum_ticket_reply.forward_failed', error=str(e))
+
+        texts = get_texts(db_user.language)
+
+        # Подтверждение пользователю
+        await message.answer(
+            texts.t('TICKET_REPLY_SENT', '✅ Ваш ответ отправлен!'),
+            reply_markup=types.InlineKeyboardMarkup(
+                inline_keyboard=[
+                    [
+                        types.InlineKeyboardButton(
+                            text=texts.t('VIEW_TICKET', '👁️ Посмотреть тикет'),
+                            callback_data=f'view_forum_ticket_{forum_ticket_id}'
+                        )
+                    ],
+                    [
+                        types.InlineKeyboardButton(
+                            text=texts.t('BACK_TO_MENU', '🏠 В главное меню'),
+                            callback_data='back_to_menu'
+                        )
+                    ],
+                ]
+            ),
+        )
+
+        await state.clear()
+
+        # Обрабатываем AI ответ (если AI включён)
+        ai_enabled_global = BotConfigurationService.get_current_value('SUPPORT_AI_ENABLED')
+        if isinstance(ai_enabled_global, str):
+            ai_enabled_global = ai_enabled_global.lower() in ('true', '1', 'on', 'yes')
+
+        if ticket.ai_enabled and ai_enabled_global:
+            try:
+                await ai_manager.ensure_providers_exist(db)
+                system_prompt = await prompt_service.get_system_prompt(db)
+
+                faq_articles = await ForumService.get_active_faq_articles(db)
+                faq_context = ForumService.format_faq_context(faq_articles)
+                if faq_context:
+                    system_prompt += f'\n\n## БАЗА ЗНАНИЙ:\n{faq_context}'
+
+                history = await ForumService.get_conversation_history(db, ticket.id)
+                messages_ai = [{'role': 'system', 'content': system_prompt}] + history
+                ai_response = await ai_manager.generate_ai_response(db=db, messages=messages_ai)
+
+                if ai_response:
+                    await ForumService.save_message(db=db, ticket_id=ticket.id, role='ai', content=ai_response)
+                    # Конвертация Markdown → Telegram HTML
+                    from app.modules.ai_ticket.utils.formatting import sanitize_ai_response
+                    safe_ai = sanitize_ai_response(ai_response)
+                    await message.answer(
+                        f'🤖 <b>AI-ассистент:</b>\n\n{safe_ai}',
+                        parse_mode='HTML',
+                        reply_markup=get_user_reply_kb(ticket.id, lang=db_user.language, show_call_manager=ticket.ai_enabled)
+                    )
+                    if forum_group_id_str and ticket.telegram_topic_id:
+                        try:
+                            await message.bot.send_message(
+                                chat_id=int(forum_group_id_str),
+                                message_thread_id=ticket.telegram_topic_id,
+                                text=f'🤖 <b>AI-Ответ</b>:\n\n{safe_ai}',
+                                parse_mode='HTML',
+                            )
+                        except Exception:
+                            pass
+            except Exception as ai_error:
+                logger.error('forum_ticket_reply.ai_failed', error=str(ai_error))
+
+        await db.commit()
+
+    except Exception as e:
+        logger.error('forum_ticket_reply.error', error=str(e))
+        texts = get_texts(db_user.language)
+        await message.answer(
+            texts.t('TICKET_REPLY_ERROR', '❌ Произошла ошибка при отправке ответа. Попробуйте позже.')
+        )
+
+
+async def cancel_forum_ticket_reply(callback: types.CallbackQuery, state: FSMContext, db_user: User):
+    """Отменить ответ на ForumTicket"""
+    await state.clear()
+    texts = get_texts(db_user.language)
+    await callback.message.edit_text(
+        texts.t('TICKET_REPLY_CANCELLED', 'Ответ отменен.'),
+        reply_markup=types.InlineKeyboardMarkup(
+            inline_keyboard=[
+                [
+                    types.InlineKeyboardButton(
+                        text=texts.t('BACK_TO_SUPPORT', '⬅️ К поддержке'),
+                        callback_data='menu_support'
+                    )
+                ]
+            ]
+        ),
+    )
+    await callback.answer()
+
+
+async def send_forum_ticket_attachments(callback: types.CallbackQuery, db_user: User, db: AsyncSession):
+    """Отправить медиа-вложения из ForumTicket пользователю."""
+    texts = get_texts(db_user.language)
+    try:
+        await callback.answer(texts.t('SENDING_ATTACHMENTS', '📎 Отправляю вложения...'))
+    except Exception:
+        pass
+
+    try:
+        ticket_id = int(callback.data.replace('forum_ticket_attachments_', ''))
+    except ValueError:
+        await callback.answer(texts.t('TICKET_NOT_FOUND', 'Тикет не найден.'), show_alert=True)
+        return
+
+    from app.database.models_ai_ticket import ForumTicket, ForumTicketMessage
+
+    stmt = select(ForumTicket).where(ForumTicket.id == ticket_id)
+    result = await db.execute(stmt)
+    ticket = result.scalars().first()
+    if not ticket or ticket.user_id != db_user.id:
+        await callback.answer(texts.t('TICKET_NOT_FOUND', 'Тикет не найден.'), show_alert=True)
+        return
+
+    # Достаём все фото-вложения
+    msg_stmt = (
+        select(ForumTicketMessage)
+        .where(
+            ForumTicketMessage.ticket_id == ticket_id,
+            ForumTicketMessage.media_type == 'photo',
+            ForumTicketMessage.media_file_id.isnot(None),
+        )
+        .order_by(ForumTicketMessage.created_at)
+    )
+    msg_result = await db.execute(msg_stmt)
+    media_messages = msg_result.scalars().all()
+
+    photos = [m.media_file_id for m in media_messages if m.media_file_id]
+    if not photos:
+        await callback.answer(texts.t('NO_ATTACHMENTS', 'Вложений нет.'), show_alert=True)
+        return
+
+    from aiogram.types import InputMediaPhoto
+
+    chunks = [photos[i:i + 10] for i in range(0, len(photos), 10)]
+    last_group_message = None
+    for chunk in chunks:
+        media = [InputMediaPhoto(media=pid) for pid in chunk]
+        try:
+            messages = await callback.message.bot.send_media_group(chat_id=callback.from_user.id, media=media)
+            if messages:
+                last_group_message = messages[-1]
+        except Exception:
+            pass
+
+    if last_group_message:
+        try:
+            kb = types.InlineKeyboardMarkup(
+                inline_keyboard=[
+                    [
+                        types.InlineKeyboardButton(
+                            text=texts.t('DELETE_MESSAGE', '🗑 Удалить'),
+                            callback_data=f'user_delete_message_{last_group_message.message_id}',
+                        )
+                    ]
+                ]
+            )
+            await callback.message.bot.send_message(
+                chat_id=callback.from_user.id,
+                text=texts.t('ATTACHMENTS_SENT', 'Вложения отправлены.'),
+                reply_markup=kb,
+            )
+        except Exception:
+            pass
+    else:
+        try:
+            await callback.answer(texts.t('ATTACHMENTS_SENT', 'Вложения отправлены.'))
+        except Exception:
+            pass
 
 
 def register_handlers(dp: Dispatcher):
@@ -1392,6 +1760,14 @@ def register_handlers(dp: Dispatcher):
     # Forum Ticket handlers
     dp.callback_query.register(view_forum_ticket, F.data.startswith('view_forum_ticket_') | F.data.startswith('forum_ticket_view_page_'))
     dp.callback_query.register(close_forum_ticket_handler, F.data.startswith('close_forum_ticket_'))
+
+    # Ответ на ForumTicket (AI-тикеты)
+    dp.callback_query.register(reply_to_forum_ticket, F.data.startswith('reply_forum_ticket_'))
+    dp.callback_query.register(cancel_forum_ticket_reply, F.data == 'cancel_forum_ticket_reply')
+    dp.message.register(handle_forum_ticket_reply, StateFilter('ai_ticket_waiting_reply'))
+
+    # Вложения ForumTicket
+    dp.callback_query.register(send_forum_ticket_attachments, F.data.startswith('forum_ticket_attachments_'))
 
     # Вложения пользователя
     dp.callback_query.register(send_ticket_attachments, F.data.startswith('ticket_attachments_'))

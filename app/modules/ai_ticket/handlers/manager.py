@@ -1,9 +1,11 @@
 """
-Manager-side handler for the DonMatteo-AI-Tiket module.
+Manager-side handler для модуля DonMatteo-AI-Tiket.
 
-Listens for messages in the Forum group. When a manager
-replies in a ticket topic, forwards the reply to the user
-and auto-disables AI for that ticket.
+Слушает сообщения в Forum-группе. Когда менеджер
+отвечает в топике тикета — пересылает ответ пользователю
+(с кнопками навигации как в оригинале) и автоотключает AI.
+Поддержка медиа (фото).
+Кнопки управления НЕ дублируются на каждом сообщении.
 """
 
 import structlog
@@ -28,38 +30,48 @@ router = Router(name='ai_ticket_manager')
 
 async def handle_manager_message(message: types.Message, bot: Bot) -> None:
     """
-    A manager sent a message inside the Forum group.
-    If it's in a ticket topic — forward to the user and disable AI.
+    Менеджер отправил сообщение в Forum-группе.
+    Если это топик тикета — пересылаем пользователю с кнопками навигации.
+    Поддерживает фото-вложения.
     """
     forum_group_id_str = BotConfigurationService.get_current_value('SUPPORT_AI_FORUM_ID')
     if not forum_group_id_str:
         return
-    
+
     forum_group_id = int(forum_group_id_str)
 
-    # Only process messages in the configured forum group
+    # Обрабатываем только сообщения в настроенной форум-группе
     if message.chat.id != forum_group_id:
         return
 
-    # Must be inside a topic (not the general topic)
+    # Должно быть внутри топика (не General)
     topic_id = message.message_thread_id
     if not topic_id:
         return
 
-    # Ignore messages from the bot itself
+    # Игнорируем сообщения от самого бота
     if message.from_user and message.from_user.id == bot.id:
         return
 
+    # Извлекаем текст и медиа
     text = message.text or message.caption or ''
-    if not text.strip():
-        return
+    media_type = None
+    media_file_id = None
 
-    # Commands in the topic (backward compatibility or backup)
+    if message.photo:
+        media_type = 'photo'
+        media_file_id = message.photo[-1].file_id
+
+    # Команды в топике
     if text.startswith('/'):
         await _handle_topic_command(message, bot, topic_id, text)
         return
 
-    # Find the ticket for this topic with user data
+    # Пустое сообщение без медиа — не обрабатываем
+    if not text.strip() and not media_file_id:
+        return
+
+    # Ищем тикет по topic_id с данными пользователя
     async with AsyncSessionLocal() as db:
         stmt = (
             select(ForumTicket)
@@ -71,39 +83,87 @@ async def handle_manager_message(message: types.Message, bot: Bot) -> None:
         )
         result = await db.execute(stmt)
         ticket = result.scalars().first()
-        
+
         if not ticket or not ticket.user:
-            return  # Not a ticket topic
+            return  # Не тикетный топик
 
         manager_name = message.from_user.full_name if message.from_user else 'Менеджер'
+        user_chat_id = ticket.user.telegram_id
+        user_lang = ticket.user.language if ticket.user else 'ru'
+        texts = get_texts(user_lang)
 
-        # Forward to the user (using telegram_id!)
+        # Формируем уведомление как в оригинале
+        reply_preview = text[:100] + '...' if len(text) > 100 else text
+        notification_text = texts.t(
+            'TICKET_REPLY_NOTIFICATION',
+            '🎫 Получен ответ по тикету #{ticket_id}\n\n{reply_preview}\n\nНажмите кнопку ниже, чтобы перейти к тикету:',
+        ).format(ticket_id=ticket.id, reply_preview=reply_preview)
+
+        # Клавиатура уведомления (как в оригинале)
+        notification_kb = types.InlineKeyboardMarkup(
+            inline_keyboard=[
+                [
+                    types.InlineKeyboardButton(
+                        text=texts.t('VIEW_TICKET', '👁️ Посмотреть тикет'),
+                        callback_data=f'view_forum_ticket_{ticket.id}'
+                    )
+                ],
+                [
+                    types.InlineKeyboardButton(
+                        text=texts.t('REPLY_TO_TICKET', '💬 Ответить'),
+                        callback_data=f'reply_forum_ticket_{ticket.id}'
+                    )
+                ],
+                [
+                    types.InlineKeyboardButton(
+                        text=texts.t('CLOSE_NOTIFICATION', '❌ Закрыть уведомление'),
+                        callback_data=f'close_ticket_notification_{ticket.id}'
+                    )
+                ],
+            ]
+        )
+
+        # Отправляем уведомление пользователю
         try:
-            await bot.send_message(
-                chat_id=ticket.user.telegram_id,
-                text=f'👨‍💼 <b>{manager_name}:</b>\n\n{text}',
-                parse_mode='HTML',
-            )
+            if media_type == 'photo' and media_file_id:
+                # Фото-уведомление
+                await bot.send_photo(
+                    chat_id=user_chat_id,
+                    photo=media_file_id,
+                    caption=notification_text,
+                    reply_markup=notification_kb,
+                    parse_mode='HTML',
+                )
+            else:
+                # Текстовое уведомление
+                await bot.send_message(
+                    chat_id=user_chat_id,
+                    text=notification_text,
+                    reply_markup=notification_kb,
+                    parse_mode='HTML',
+                )
         except Exception as e:
             logger.error(
                 'ai_ticket_manager.forward_to_user_failed',
                 error=str(e),
-                telegram_id=ticket.user.telegram_id,
+                telegram_id=user_chat_id,
                 ticket_id=ticket.id
             )
             await message.reply('⚠️ Не удалось доставить сообщение пользователю.')
             return
 
-        # Save manager message
+        # Сохраняем сообщение менеджера с медиа
         await ForumService.save_message(
             db=db,
             ticket_id=ticket.id,
             role='manager',
-            content=text,
+            content=text or '[фото]',
             message_id=message.message_id,
+            media_type=media_type,
+            media_file_id=media_file_id,
         )
 
-        # Disable AI automatically if manager replied
+        # Автоматически отключаем AI если менеджер ответил (только уведомление, БЕЗ кнопок)
         if ticket.ai_enabled:
             await ForumService.disable_ai(db, ticket.id)
             try:
@@ -111,40 +171,33 @@ async def handle_manager_message(message: types.Message, bot: Bot) -> None:
                     chat_id=message.chat.id,
                     message_thread_id=topic_id,
                     text='ℹ️ AI-ассистент автоматически отключён.',
-                    reply_markup=get_manager_kb(ticket.id, lang=ticket.user.language if ticket.user else 'ru', ai_enabled=False)
+                    reply_markup=get_manager_kb(ticket.id, lang=user_lang, ai_enabled=False)
                 )
             except Exception:
                 pass
-        else:
-            # Just send/update controls
-            try:
-                await message.answer(
-                    '📟 Панель управления:',
-                    reply_markup=get_manager_kb(ticket.id, lang=ticket.user.language if ticket.user else 'ru', ai_enabled=False)
-                )
-            except Exception:
-                pass
+        # НЕ отправляем кнопки управления на каждое сообщение менеджера —
+        # кнопки показываются только при системных событиях (выкл AI, вызов менеджера и т.д.)
 
         await db.commit()
 
 
 async def handle_manager_callback(callback: types.CallbackQuery, bot: Bot):
-    """Handle ticket management buttons."""
+    """Обработка кнопок управления тикетом менеджером."""
     data = callback.data or ''
     async with AsyncSessionLocal() as db:
         if data.startswith('ai_ticket_close:'):
             ticket_id = int(data.split(':')[1])
-            # Fetch ticket with user
+            # Загружаем тикет с пользователем
             stmt = select(ForumTicket).options(joinedload(ForumTicket.user)).where(ForumTicket.id == ticket_id)
             res = await db.execute(stmt)
             ticket = res.scalars().first()
             if not ticket:
                 await callback.answer('Тикет не найден')
                 return
-            
+
             await ForumService.close_ticket(db, ticket.id, bot=bot)
             await db.commit()
-            
+
             try:
                 await bot.send_message(
                     chat_id=ticket.user.telegram_id,
@@ -152,7 +205,7 @@ async def handle_manager_callback(callback: types.CallbackQuery, bot: Bot):
                 )
             except Exception:
                 pass
-            
+
             await callback.message.edit_text('✅ Тикет закрыт.')
             await callback.answer('Тикет закрыт')
 
@@ -164,7 +217,7 @@ async def handle_manager_callback(callback: types.CallbackQuery, bot: Bot):
             if not ticket:
                 await callback.answer('Ошибка')
                 return
-            
+
             new_state = not ticket.ai_enabled
             if new_state:
                 await ForumService.enable_ai(db, ticket_id)
@@ -172,7 +225,7 @@ async def handle_manager_callback(callback: types.CallbackQuery, bot: Bot):
             else:
                 await ForumService.disable_ai(db, ticket_id)
                 msg = '🔇 AI-ассистент выключен.'
-            
+
             await db.commit()
             await callback.message.edit_text(msg, reply_markup=get_manager_kb(ticket_id, lang=ticket.user.language if ticket.user else 'ru', ai_enabled=new_state))
             await callback.answer(msg)
@@ -184,7 +237,7 @@ async def _handle_topic_command(
     topic_id: int,
     text: str,
 ) -> None:
-    """Handle manager commands inside a ticket topic."""
+    """Обработка команд менеджера внутри топика тикета."""
     command = text.strip().lower()
 
     async with AsyncSessionLocal() as db:
@@ -195,7 +248,6 @@ async def _handle_topic_command(
         if command == '/close':
             await ForumService.close_ticket(db, ticket.id)
             await db.commit()
-            # We skip user notification here to avoid double notify if used with buttons
             await message.reply('✅ Тикет закрыт.')
 
         elif command == '/ai_on':
@@ -210,18 +262,18 @@ async def _handle_topic_command(
 
 
 def register_manager_handlers(dp: Dispatcher) -> None:
-    """Register manager handlers."""
+    """Регистрация обработчиков менеджера."""
     forum_group_id_str = BotConfigurationService.get_current_value('SUPPORT_AI_FORUM_ID')
     if not forum_group_id_str:
         return
 
     f_id = int(forum_group_id_str)
-    
+
     dp.message.register(
         handle_manager_message,
         F.chat.id == f_id,
     )
-    
+
     dp.callback_query.register(
         handle_manager_callback,
         F.data.startswith('ai_ticket_close:') | F.data.startswith('ai_ticket_toggle_ai:'),
