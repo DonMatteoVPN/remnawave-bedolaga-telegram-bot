@@ -144,8 +144,31 @@ async def handle_ai_ticket_message(
             system_prompt += f'\n\n## БАЗА ЗНАНИЙ:\n{faq_context}'
 
         user_context_parts: list[str] = []
-        if hasattr(db_user, 'balance'):
-            user_context_parts.append(f'Баланс: {(db_user.balance or 0) / 100:.2f} руб.')
+        user_context_parts.append(f'ID Пользователя: {db_user.id}')
+        user_context_parts.append(f'Имя: {db_user.full_name}')
+        user_context_parts.append(f'Язык: {db_user.language}')
+        if hasattr(db_user, 'balance_kopeks'):
+            user_context_parts.append(f'Баланс: {(db_user.balance_kopeks or 0) / 100:.2f} руб.')
+            
+        subscription = db_user.subscription
+        if subscription:
+            user_context_parts.append(f'Статус подписки: {subscription.status}')
+            if subscription.end_date:
+                user_context_parts.append(f'Действует до: {subscription.end_date.strftime("%Y-%m-%d %H:%M")}')
+            if subscription.traffic_limit_gb and subscription.traffic_used_gb is not None:
+                user_context_parts.append(f'Трафик: использовано {subscription.traffic_used_gb:.2f} ГБ из {subscription.traffic_limit_gb} ГБ')
+            if subscription.device_limit:
+                user_context_parts.append(f'Лимит устройств: {subscription.device_limit}')
+                
+        # Получаем данные об устройствах из RemnaWave
+        try:
+            from app.handlers.subscription.devices import get_current_devices_detailed
+            devices_info = await get_current_devices_detailed(db_user)
+            connected_count = devices_info.get("count", 0)
+            user_context_parts.append(f'Текущее количество подключенных устройств (HWID): {connected_count}')
+        except Exception as e:
+            logger.warning('ai_ticket_client.get_devices_failed', error=str(e))
+
         if user_context_parts:
             system_prompt += '\n\n## КОНТЕКСТ ПОЛЬЗОВАТЕЛЯ:\n' + '\n'.join(user_context_parts)
 
@@ -156,7 +179,35 @@ async def handle_ai_ticket_message(
         ai_response = await ai_manager.generate_ai_response(db=db, messages=messages_ai)
 
         if ai_response:
-            # Сохраняем оригинал, отправляем санитизированную версию
+            # Проверяем триггер автовызова менеджера
+            if '[CALL_MANAGER]' in ai_response:
+                # Отключаем ИИ
+                ticket.ai_enabled = False
+                await db.commit()
+                
+                # Сообщаем менеджеру в топике
+                if forum_group_id and ticket.telegram_topic_id:
+                    try:
+                        await bot.send_message(
+                            chat_id=forum_group_id,
+                            message_thread_id=ticket.telegram_topic_id,
+                            text='⚠️ <b>АВТОВЫЗОВ:</b> ИИ не смог найти ответ в FAQ и перевел тикет на менеджера. AI-ассистент отключён.',
+                            parse_mode='HTML',
+                            reply_markup=get_manager_kb(ticket.id, lang='ru', ai_enabled=False)
+                        )
+                    except Exception as e:
+                        logger.error('ai_ticket_client.manager_notify_failed', error=str(e))
+                
+                # Сообщаем пользователю стандартным текстом
+                msg_text = texts.t('AI_TICKET_MANAGER_AUTO_CALLED', '🤖 <b>AI-ассистент:</b>\nК сожалению, я не знаю точного ответа на ваш вопрос. Я передал ваше обращение менеджеру, пожалуйста, ожидайте ответа специалиста.')
+                await status_msg.edit_text(
+                    msg_text,
+                    parse_mode='HTML',
+                    reply_markup=get_user_navigation_kb(ticket.id, lang=db_user.language, show_call_manager=False)
+                )
+                return
+
+            # Формальный ответ от ИИ
             await ForumService.save_message(db=db, ticket_id=ticket.id, role='ai', content=ai_response)
             safe_response = sanitize_ai_response(ai_response)
 
