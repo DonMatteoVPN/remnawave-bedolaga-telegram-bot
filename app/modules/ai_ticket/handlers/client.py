@@ -113,7 +113,7 @@ async def handle_ai_ticket_message(
     status_msg = await message.answer(
         status_text,
         parse_mode='HTML',
-        reply_markup=get_user_reply_kb(ticket.id, lang=db_user.language, show_call_manager=ticket.ai_enabled)
+        reply_markup=get_user_reply_kb(ticket.id, lang=db_user.language, show_call_manager=False)
     )
 
     if not should_run_ai:
@@ -198,16 +198,19 @@ async def handle_ai_ticket_message(
                     except Exception as e:
                         logger.error('ai_ticket_client.manager_notify_failed', error=str(e))
                 
-                # Сообщаем пользователю стандартным текстом
+                # Сообщаем пользователю стандартным текстом, скрывая кнопку вызова менеджера
                 msg_text = texts.t('AI_TICKET_MANAGER_AUTO_CALLED', '🤖 <b>AI-ассистент:</b>\nК сожалению, я не знаю точного ответа на ваш вопрос. Я передал ваше обращение менеджеру, пожалуйста, ожидайте ответа специалиста.')
                 await status_msg.edit_text(
                     msg_text,
                     parse_mode='HTML',
                     reply_markup=get_user_navigation_kb(ticket.id, lang=db_user.language, show_call_manager=False)
                 )
+                
+                # Если сработал автовызов, выходим и не отправляем [CALL_MANAGER] как обычный ответ
+                await db.commit()
                 return
 
-            # Формальный ответ от ИИ
+            # Формальный ответ от ИИ (только если не было CALL_MANAGER)
             await ForumService.save_message(db=db, ticket_id=ticket.id, role='ai', content=ai_response)
             safe_response = sanitize_ai_response(ai_response)
 
