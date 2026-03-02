@@ -40,6 +40,26 @@ async def show_ticket_priority_selection(
     """Начать создание тикета без выбора приоритета: сразу просим заголовок"""
     texts = get_texts(db_user.language)
 
+    # --- DonMatteo-AI-Tiket routing guard ---
+    from app.services.support_settings_service import SupportSettingsService
+
+    if SupportSettingsService.get_system_mode() == 'ai_tiket':
+        from app.modules.ai_ticket.handlers.client import handle_ai_ticket_message
+
+        await callback.answer()
+        service_name = settings.BOT_USERNAME or 'Техподдержка'
+        # In ai_tiket mode, skip classic ticket creation — prompt user to type message
+        await callback.message.edit_text(
+            f'🤖 <b>{service_name}</b>\n\n'
+            'Напишите ваш вопрос или опишите проблему — '
+            'AI-ассистент ответит моментально.',
+            parse_mode='HTML',
+        )
+        # Set a dedicated FSM state so the next text message goes to the AI handler
+        await state.set_state('ai_ticket_waiting_message')
+        return
+    # --- End routing guard ---
+
     # Глобальный блок и наличие активного тикета
     from app.database.crud.ticket import TicketCRUD
 
@@ -1111,6 +1131,25 @@ async def notify_admins_about_ticket_reply(
 def register_handlers(dp: Dispatcher):
     """Регистрация обработчиков тикетов"""
 
+    # --- DonMatteo-AI-Tiket handlers ---
+    from app.modules.ai_ticket.handlers.client import register_client_handlers
+
+    register_client_handlers(dp)
+
+    # AI ticket message handler (FSM state from routing guard)
+    async def _ai_ticket_message_proxy(
+        message: types.Message, state: FSMContext, db_user: User, db: AsyncSession
+    ):
+        from app.modules.ai_ticket.handlers.client import handle_ai_ticket_message
+
+        await state.clear()
+        await handle_ai_ticket_message(message, message.bot, db, db_user)
+
+    from aiogram.fsm.state import State as _State
+
+    dp.message.register(_ai_ticket_message_proxy, _State(state='ai_ticket_waiting_message'))
+    # --- End AI Tiket ---
+
     # Создание тикета (теперь без приоритета)
     dp.callback_query.register(show_ticket_priority_selection, F.data == 'create_ticket')
 
@@ -1148,3 +1187,4 @@ def register_handlers(dp: Dispatcher):
 
     # Закрытие уведомлений
     dp.callback_query.register(close_ticket_notification, F.data.startswith('close_ticket_notification_'))
+

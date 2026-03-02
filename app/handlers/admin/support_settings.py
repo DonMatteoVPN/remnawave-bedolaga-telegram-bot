@@ -65,6 +65,15 @@ def _get_support_settings_keyboard(language: str) -> types.InlineKeyboardMarkup:
             ),
         ]
     )
+    # DonMatteo-AI-Tiket mode button on its own row
+    rows.append(
+        [
+            types.InlineKeyboardButton(
+                text=mode_button('ADMIN_SUPPORT_SETTINGS_MODE_AI_TIKET', '🤖 DonMatteo-AI-Tiket', mode == 'ai_tiket'),
+                callback_data='admin_support_mode_ai_tiket',
+            ),
+        ]
+    )
 
     rows.append(
         [
@@ -101,29 +110,62 @@ def _get_support_settings_keyboard(language: str) -> types.InlineKeyboardMarkup:
         ]
     )
 
-    # SLA block
-    rows.append(
-        [
-            types.InlineKeyboardButton(
-                text=(
-                    f'{"⏰" if sla_enabled else "⏹️"} '
-                    f'{texts.t("ADMIN_SUPPORT_SETTINGS_SLA_LABEL", "SLA")}: '
-                    f'{status_enabled if sla_enabled else status_disabled}'
-                ),
-                callback_data='admin_support_toggle_sla',
-            )
-        ]
-    )
-    rows.append(
-        [
-            types.InlineKeyboardButton(
-                text=texts.t('ADMIN_SUPPORT_SETTINGS_SLA_TIME', '⏳ Время SLA: {minutes} мин').format(
-                    minutes=sla_minutes
-                ),
-                callback_data='admin_support_set_sla_minutes',
-            )
-        ]
-    )
+    # SLA block — only shown when NOT in ai_tiket mode
+    if mode != 'ai_tiket':
+        rows.append(
+            [
+                types.InlineKeyboardButton(
+                    text=(
+                        f'{"⏰" if sla_enabled else "⏹️"} '
+                        f'{texts.t("ADMIN_SUPPORT_SETTINGS_SLA_LABEL", "SLA")}: '
+                        f'{status_enabled if sla_enabled else status_disabled}'
+                    ),
+                    callback_data='admin_support_toggle_sla',
+                )
+            ]
+        )
+        rows.append(
+            [
+                types.InlineKeyboardButton(
+                    text=texts.t('ADMIN_SUPPORT_SETTINGS_SLA_TIME', '⏳ Время SLA: {minutes} мин').format(
+                        minutes=sla_minutes
+                    ),
+                    callback_data='admin_support_set_sla_minutes',
+                )
+            ]
+        )
+
+    # AI Tiket settings — only shown when in ai_tiket mode
+    if mode == 'ai_tiket':
+        ai_enabled = settings.SUPPORT_AI_ENABLED
+        ai_forum_id = settings.SUPPORT_AI_FORUM_ID or 'не задано'
+        rows.append(
+            [
+                types.InlineKeyboardButton(
+                    text=(
+                        f'{"🟢" if ai_enabled else "🔴"} '
+                        f'AI-ассистент: {"Вкл" if ai_enabled else "Выкл"}'
+                    ),
+                    callback_data='admin_support_ai_toggle',
+                )
+            ]
+        )
+        rows.append(
+            [
+                types.InlineKeyboardButton(
+                    text=f'💬 Forum Group ID: {ai_forum_id}',
+                    callback_data='admin_support_ai_forum_id',
+                )
+            ]
+        )
+        rows.append(
+            [
+                types.InlineKeyboardButton(
+                    text='🤖 Провайдеры / Модели / Промпт / FAQ',
+                    callback_data='aip_list',
+                )
+            ]
+        )
 
     # Moderators
     moderators = SupportSettingsService.get_moderators()
@@ -379,6 +421,23 @@ async def set_mode_both(callback: types.CallbackQuery, db_user: User, db: AsyncS
 
 @admin_required
 @error_handler
+async def set_mode_ai_tiket(callback: types.CallbackQuery, db_user: User, db: AsyncSession):
+    SupportSettingsService.set_system_mode('ai_tiket')
+    # Auto-enable AI when switching to ai_tiket mode
+    settings.SUPPORT_AI_ENABLED = True
+    await show_support_settings(callback, db_user, db)
+
+
+@admin_required
+@error_handler
+async def toggle_ai_enabled(callback: types.CallbackQuery, db_user: User, db: AsyncSession):
+    settings.SUPPORT_AI_ENABLED = not settings.SUPPORT_AI_ENABLED
+    await callback.answer(f'AI: {"Вкл" if settings.SUPPORT_AI_ENABLED else "Выкл"}', show_alert=False)
+    await show_support_settings(callback, db_user, db)
+
+
+@admin_required
+@error_handler
 async def start_edit_desc(callback: types.CallbackQuery, db_user: User, db: AsyncSession, state: FSMContext):
     texts = get_texts(db_user.language)
     current_desc_html = SupportSettingsService.get_support_info_text(db_user.language)
@@ -497,6 +556,8 @@ def register_handlers(dp: Dispatcher):
     dp.callback_query.register(set_mode_tickets, F.data == 'admin_support_mode_tickets')
     dp.callback_query.register(set_mode_contact, F.data == 'admin_support_mode_contact')
     dp.callback_query.register(set_mode_both, F.data == 'admin_support_mode_both')
+    dp.callback_query.register(set_mode_ai_tiket, F.data == 'admin_support_mode_ai_tiket')
+    dp.callback_query.register(toggle_ai_enabled, F.data == 'admin_support_ai_toggle')
     dp.callback_query.register(start_edit_desc, F.data == 'admin_support_edit_desc')
     dp.callback_query.register(send_desc_copy, F.data == 'admin_support_send_desc')
     dp.callback_query.register(delete_sent_message, F.data == 'admin_support_delete_msg')
@@ -510,3 +571,11 @@ def register_handlers(dp: Dispatcher):
     dp.message.register(handle_new_desc, SupportSettingsStates.waiting_for_desc)
     dp.message.register(handle_sla_minutes, SupportAdvancedStates.waiting_for_sla_minutes)
     dp.message.register(handle_moderator_id, SupportAdvancedStates.waiting_for_moderator_id)
+
+    # DonMatteo-AI-Tiket: multi-provider, FAQ, prompt handlers
+    from app.modules.ai_ticket.handlers.ai_provider_admin import register_ai_provider_handlers
+    from app.modules.ai_ticket.handlers.faq_admin import register_faq_handlers
+
+    register_ai_provider_handlers(dp)
+    register_faq_handlers(dp)
+

@@ -45,6 +45,10 @@ class Settings(BaseSettings):
     SUPPORT_TICKET_SLA_CHECK_INTERVAL_SECONDS: int = 60
     SUPPORT_TICKET_SLA_REMINDER_COOLDOWN_MINUTES: int = 15
 
+    # DonMatteo-AI-Tiket settings (провайдеры, ключи, модели — всё в админке)
+    SUPPORT_AI_ENABLED: bool = False
+    SUPPORT_AI_FORUM_ID: str | None = None  # Telegram Forum group ID for AI tickets (-100xxx)
+
     # MiniApp tickets settings
     MINIAPP_TICKETS_ENABLED: bool = True  # Enable/disable tickets section in miniapp
     MINIAPP_SUPPORT_TYPE: str = 'tickets'  # one of: tickets, profile, url

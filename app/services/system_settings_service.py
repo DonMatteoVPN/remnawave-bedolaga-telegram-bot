@@ -129,6 +129,7 @@ class BotConfigurationService:
         'DEBUG': '🧪 Режим разработки',
         'MODERATION': '🛡️ Модерация и фильтры',
         'BAN_NOTIFICATIONS': '🚫 Тексты уведомлений о блокировках',
+        'SUPPORT_AI': '🤖 DonMatteo-AI-Tiket',
     }
 
     CATEGORY_DESCRIPTIONS: dict[str, str] = {
@@ -189,6 +190,7 @@ class BotConfigurationService:
         'DEBUG': 'Отладочные функции и безопасный режим.',
         'MODERATION': 'Настройки фильтров отображаемых имен и защиты от фишинга.',
         'BAN_NOTIFICATIONS': 'Тексты уведомлений о блокировках, которые отправляются пользователям.',
+        'SUPPORT_AI': 'Настройки AI-ассистента первой линии: Telegram Forum группа, провайдеры, ключи и системный промпт.',
     }
 
     @staticmethod
@@ -247,6 +249,8 @@ class BotConfigurationService:
         'SUPPORT_TICKET_SLA_MINUTES': 'SUPPORT',
         'SUPPORT_TICKET_SLA_CHECK_INTERVAL_SECONDS': 'SUPPORT',
         'SUPPORT_TICKET_SLA_REMINDER_COOLDOWN_MINUTES': 'SUPPORT',
+        'SUPPORT_AI_FORUM_ID': 'SUPPORT_AI',
+        'SUPPORT_AI_ENABLED': 'SUPPORT_AI',
         'ADMIN_NOTIFICATIONS_ENABLED': 'ADMIN_NOTIFICATIONS',
         'ADMIN_NOTIFICATIONS_CHAT_ID': 'ADMIN_NOTIFICATIONS',
         'ADMIN_NOTIFICATIONS_TOPIC_ID': 'ADMIN_NOTIFICATIONS',
@@ -364,6 +368,7 @@ class BotConfigurationService:
         'DEBUG': 'DEBUG',
         'DISPLAY_NAME_': 'MODERATION',
         'BAN_MSG_': 'BAN_NOTIFICATIONS',
+        'SUPPORT_AI_': 'SUPPORT_AI',
     }
 
     CHOICES: dict[str, list[ChoiceOption]] = {
@@ -395,7 +400,9 @@ class BotConfigurationService:
             ChoiceOption('tickets', '🎫 Только тикеты'),
             ChoiceOption('contact', '💬 Только контакт'),
             ChoiceOption('both', '🔁 Оба варианта'),
+            ChoiceOption('ai_tiket', '🤖 DonMatteo-AI-Tiket'),
         ],
+
         'CONNECT_BUTTON_MODE': [
             ChoiceOption('guide', '📘 Гайд'),
             ChoiceOption('miniapp_subscription', '🧾 Mini App подписка'),
