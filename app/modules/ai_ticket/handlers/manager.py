@@ -211,7 +211,7 @@ async def handle_manager_callback(callback: types.CallbackQuery, bot: Bot):
 
         elif data.startswith('ai_ticket_toggle_ai:'):
             ticket_id = int(data.split(':')[1])
-            stmt = select(ForumTicket).where(ForumTicket.id == ticket_id)
+            stmt = select(ForumTicket).options(joinedload(ForumTicket.user)).where(ForumTicket.id == ticket_id)
             res = await db.execute(stmt)
             ticket = res.scalars().first()
             if not ticket:
@@ -227,7 +227,13 @@ async def handle_manager_callback(callback: types.CallbackQuery, bot: Bot):
                 msg = '🔇 AI-ассистент выключен.'
 
             await db.commit()
-            await callback.message.edit_text(msg, reply_markup=get_manager_kb(ticket_id, lang=ticket.user.language if ticket.user else 'ru', ai_enabled=new_state))
+            
+            # Для избежания MissingGreenlet при обращении к ticket.user
+            lang = 'ru'
+            if ticket and ticket.user:
+                lang = ticket.user.language
+
+            await callback.message.edit_text(msg, reply_markup=get_manager_kb(ticket_id, lang=lang, ai_enabled=new_state))
             await callback.answer(msg)
 
 

@@ -1452,7 +1452,7 @@ class BotConfigurationService:
                 overrides[row.key] = row.value
 
         for key, raw_value in overrides.items():
-            if cls._is_env_override(key):
+            if cls._is_env_override(key) and key not in {'SUPPORT_AI_ENABLED', 'SUPPORT_AI_FORUM_ID'}:
                 logger.debug('Пропускаем настройку из БД: используется значение из окружения', key=key)
                 continue
             try:
