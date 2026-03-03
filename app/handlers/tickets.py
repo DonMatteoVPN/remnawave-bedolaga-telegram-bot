@@ -44,17 +44,43 @@ async def show_ticket_priority_selection(
     # --- DonMatteo-AI-Tiket routing guard ---
     from app.services.support_settings_service import SupportSettingsService
 
-    if SupportSettingsService.get_system_mode() == 'ai_tiket':
+    mode = SupportSettingsService.get_system_mode()
+    from app.config import settings
+    
+    # Фоллбек: если режим ai_tiket, но ID форума не настроен — откатываемся на стандартные тикеты
+    if mode == 'ai_tiket' and not settings.SUPPORT_AI_FORUM_ID:
+        logger.warning('tickets.ai_forum_id_not_set_fallback_to_standard', user_id=callback.from_user.id)
+        try:
+            from app.services.admin_notification_service import AdminNotificationService
+            admin_notify = AdminNotificationService(callback.bot)
+            await admin_notify.send_ticket_event_notification(
+                '⚠️ <b>ВНИМАНИЕ:</b> Режим AI-тикетов включен, но ID форума (SUPPORT_AI_FORUM_ID) не настроен!\n'
+                'Тикеты автоматически перенаправлены в стандартную систему.'
+            )
+        except Exception as e:
+            logger.error('tickets.admin_notify_failed', error=str(e))
+        mode = 'tickets'
+
+    if mode == 'ai_tiket':
         from app.modules.ai_ticket.handlers.client import handle_ai_ticket_message
-        from app.config import settings
 
         await callback.answer()
         service_name = settings.BOT_USERNAME or 'Техподдержка'
-        prompt_text = (
-            f'🤖 <b>{service_name}</b>\n\n'
-            'Напишите ваш вопрос или опишите проблему — '
-            'AI-ассистент ответит моментально.'
-        )
+        
+        # Динамический текст в зависимости от активности ИИ
+        if settings.SUPPORT_AI_ENABLED:
+            prompt_text = (
+                f'🤖 <b>{service_name}</b>\n\n'
+                'Напишите ваш вопрос или опишите проблему — '
+                'AI-ассистент ответит моментально.'
+            )
+        else:
+            prompt_text = (
+                f'👤 <b>{service_name}</b>\n\n'
+                'Напишите ваш вопрос или опишите проблему — '
+                'наши менеджеры ответят вам в ближайшее время.'
+            )
+            
         cancel_kb = get_ticket_cancel_keyboard(db_user.language)
         
         try:
@@ -1293,11 +1319,20 @@ async def view_forum_ticket(callback: types.CallbackQuery, db_user: User, db: As
             sender = role_map.get(msg.role, msg.role)
             # Санитизация контента (убираем <think>, конвертируем Markdown в HTML)
             content = msg.content or ''
+
+            from app.modules.ai_ticket.utils.media_sender import extract_media_tags, strip_media_tags
+            ai_tags = extract_media_tags(content)
+            if ai_tags:
+                content = strip_media_tags(content)
+
             content = _sanitize(content)
             block = f'{sender} ({format_local_datetime(msg.created_at, "%d.%m %H:%M")}):\n{content}\n\n'
             # Индикация медиа-вложений
             if getattr(msg, 'media_type', None) == 'photo':
                 block += '📎 Вложение: фото\n\n'
+                has_photos = True
+            if ai_tags:
+                block += '📎 Вложение: AI-Медиа\n\n'
                 has_photos = True
             message_blocks.append(block)
 
@@ -1391,7 +1426,7 @@ async def close_forum_ticket_handler(callback: types.CallbackQuery, db_user: Use
     await db.commit()
     
     texts = get_texts(db_user.language)
-    await callback.answer(texts.t('TICKET_CLOSED_CONFIRM', 'Тикет успешно закрыт.'), show_alert=True)
+    await callback.answer(texts.t('TICKET_CLOSED_CONFIRM', 'Тикет успешно закрыт.'), show_alert=False)
     await show_my_tickets(callback, db_user, db)
 
 
@@ -1487,7 +1522,9 @@ async def handle_forum_ticket_reply(message: types.Message, state: FSMContext, d
     from app.services.system_settings_service import BotConfigurationService
     from app.modules.ai_ticket.services import ai_manager
     from app.modules.ai_ticket.services import prompt_service
-    from app.modules.ai_ticket.utils.keyboards import get_user_reply_kb
+    from app.modules.ai_ticket.utils.keyboards import get_user_reply_kb, get_user_navigation_kb
+    from app.modules.ai_ticket.utils.media_sender import extract_and_send_media
+    import re as _re
 
     try:
         # Проверяем тикет
@@ -1583,28 +1620,118 @@ async def handle_forum_ticket_reply(message: types.Message, state: FSMContext, d
                 if faq_context:
                     system_prompt += f'\n\n## БАЗА ЗНАНИЙ:\n{faq_context}'
 
+                user_context = await ForumService.get_rich_user_context(db, db_user.id)
+                if user_context:
+                    system_prompt += f'\n\n## КОНТЕКСТ ПОЛЬЗОВАТЕЛЯ:\n{user_context}'
+
                 history = await ForumService.get_conversation_history(db, ticket.id)
                 messages_ai = [{'role': 'system', 'content': system_prompt}] + history
                 ai_response = await ai_manager.generate_ai_response(db=db, messages=messages_ai)
 
                 if ai_response:
-                    await ForumService.save_message(db=db, ticket_id=ticket.id, role='ai', content=ai_response)
-                    # Конвертация Markdown → Telegram HTML
+                    logger.info('forum_ticket_reply.raw_response', response=ai_response)
+                    
+                    # Чистим think-блоки ДО проверки тегов
+                    cleaned_response = _re.sub(r'<think>.*?</think>', '', ai_response, flags=_re.DOTALL).strip()
+                    logger.info('forum_ticket_reply.cleaned_response', response=cleaned_response)
+
+                    # Проверяем триггеры автовызова менеджера (регуляркой для надежности)
+                    cleaned_lower = cleaned_response.lower()
+
+                    spam_trigger_pattern = _re.compile(r'\[\s*spam_call_manager\s*\]', _re.IGNORECASE)
+                    general_trigger_pattern = _re.compile(
+                        r'\[\s*(call_manager|call manager|call-manager|manager|вызов_менеджера|позвать_менеджера|помощь|help)\s*\]|'
+                        r'(call_manager|call manager|call-manager|вызов_менеджера|позвать_менеджера)', 
+                        _re.IGNORECASE
+                    )
+                    
+                    is_spam = bool(spam_trigger_pattern.search(cleaned_lower))
+                    is_general = bool(general_trigger_pattern.search(cleaned_lower))
+                    
+                    if is_spam or is_general:
+                        # Отключаем ИИ
+                        ticket.ai_enabled = False
+                        await db.commit()
+                        
+                        # Сообщаем менеджеру в топике
+                        if forum_group_id_str and ticket.telegram_topic_id:
+                            manager_msg = (
+                                '⚠️ <b>АВТОВЫЗОВ (СПАМ):</b> Пользователь настойчиво повторяет вопрос. ИИ отключён.'
+                                if is_spam else
+                                '⚠️ <b>АВТОВЫЗОВ:</b> ИИ не смог найти ответ в FAQ и перевел тикет на менеджера. AI-ассистент отключён.'
+                            )
+                            try:
+                                await message.bot.send_message(
+                                    chat_id=int(forum_group_id_str),
+                                    message_thread_id=ticket.telegram_topic_id,
+                                    text=manager_msg,
+                                    parse_mode='HTML',
+                                    reply_markup=get_manager_kb(ticket.id, lang='ru', ai_enabled=False)
+                                )
+                            except Exception as e:
+                                logger.error('forum_ticket_reply.manager_notify_failed', error=str(e))
+                        
+                        # Сообщаем пользователю соответствующим текстом
+                        if is_spam:
+                            msg_text = texts.t('AI_TICKET_SPAM_CALLED', '🤖 <b>AI-ассистент:</b>\nПохоже, мой ответ не помог, и вы продолжаете задавать один и тот же вопрос. Я передал ваше обращение менеджеру для уточнения деталей. Пожалуйста, ожидайте.')
+                        else:
+                            msg_text = texts.t('AI_TICKET_MANAGER_AUTO_CALLED', '🤖 <b>AI-ассистент:</b>\nК сожалению, я не знаю точного ответа на ваш вопрос. Я передал ваше обращение менеджеру, пожалуйста, ожидайте ответа специалиста.')
+                        
+                        await message.answer(
+                            msg_text,
+                            parse_mode='HTML',
+                            reply_markup=get_user_navigation_kb(ticket.id, lang=db_user.language, show_call_manager=False)
+                        )
+                        await db.commit()
+                        return
+
+                    # Принудительно вырезаем любые упоминания триггеров из финального текста
+                    cleaned_output = spam_trigger_pattern.sub('', cleaned_response)
+                    cleaned_output = general_trigger_pattern.sub('', cleaned_output).strip()
+
+                    # Сохраняем и санитарная обработка
+                    await ForumService.save_message(db=db, ticket_id=ticket.id, role='ai', content=cleaned_output)
+                    
                     from app.modules.ai_ticket.utils.formatting import sanitize_ai_response
-                    safe_ai = sanitize_ai_response(ai_response)
+                    safe_ai = sanitize_ai_response(cleaned_output)
+
+                    # Извлекаем медиа-теги и отправляем медиа пользователю
+                    safe_ai = await extract_and_send_media(
+                        bot=message.bot,
+                        chat_id=message.chat.id,
+                        ai_response=safe_ai,
+                        db=db,
+                    )
+
                     await message.answer(
                         f'🤖 <b>AI-ассистент:</b>\n\n{safe_ai}',
                         parse_mode='HTML',
                         reply_markup=get_user_reply_kb(ticket.id, lang=db_user.language, show_call_manager=ticket.ai_enabled)
                     )
+
                     if forum_group_id_str and ticket.telegram_topic_id:
                         try:
+                            # Дублируем текст в форум
                             await message.bot.send_message(
                                 chat_id=int(forum_group_id_str),
                                 message_thread_id=ticket.telegram_topic_id,
                                 text=f'🤖 <b>AI-Ответ</b>:\n\n{safe_ai}',
                                 parse_mode='HTML',
                             )
+                            # Дублируем медиа в форум-топик
+                            from app.modules.ai_ticket.utils.media_sender import extract_media_tags, get_media_by_tags
+                            media_tags = extract_media_tags(sanitize_ai_response(cleaned_response))
+                            if media_tags:
+                                media_items = await get_media_by_tags(db, media_tags)
+                                for m in media_items:
+                                    try:
+                                        if m.media_type == 'photo':
+                                            await message.bot.send_photo(chat_id=int(forum_group_id_str), message_thread_id=ticket.telegram_topic_id, photo=m.file_id, caption=f'📎 Медиа: {m.tag}')
+                                        elif m.media_type == 'video':
+                                            await message.bot.send_video(chat_id=int(forum_group_id_str), message_thread_id=ticket.telegram_topic_id, video=m.file_id, caption=f'📎 Медиа: {m.tag}')
+                                        elif m.media_type == 'animation':
+                                            await message.bot.send_animation(chat_id=int(forum_group_id_str), message_thread_id=ticket.telegram_topic_id, animation=m.file_id, caption=f'📎 Медиа: {m.tag}')
+                                    except Exception: pass
                         except Exception:
                             pass
             except Exception as ai_error:
@@ -1663,21 +1790,30 @@ async def send_forum_ticket_attachments(callback: types.CallbackQuery, db_user: 
         await callback.answer(texts.t('TICKET_NOT_FOUND', 'Тикет не найден.'), show_alert=True)
         return
 
-    # Достаём все фото-вложения
+    # Достаём все сообщения
     msg_stmt = (
         select(ForumTicketMessage)
         .where(
             ForumTicketMessage.ticket_id == ticket_id,
-            ForumTicketMessage.media_type == 'photo',
-            ForumTicketMessage.media_file_id.isnot(None),
         )
         .order_by(ForumTicketMessage.created_at)
     )
     msg_result = await db.execute(msg_stmt)
-    media_messages = msg_result.scalars().all()
+    all_messages = msg_result.scalars().all()
 
-    photos = [m.media_file_id for m in media_messages if m.media_file_id]
-    if not photos:
+    photos = [m.media_file_id for m in all_messages if m.media_type == 'photo' and m.media_file_id]
+
+    from app.modules.ai_ticket.utils.media_sender import extract_media_tags, get_media_by_tags
+    ai_tags = []
+    for m in all_messages:
+        if m.role == 'ai' and m.content:
+            ai_tags.extend(extract_media_tags(m.content))
+
+    ai_media_items = []
+    if ai_tags:
+        ai_media_items = await get_media_by_tags(db, list(dict.fromkeys(ai_tags))) # Убираем дубли
+
+    if not photos and not ai_media_items:
         await callback.answer(texts.t('NO_ATTACHMENTS', 'Вложений нет.'), show_alert=True)
         return
 
@@ -1685,14 +1821,32 @@ async def send_forum_ticket_attachments(callback: types.CallbackQuery, db_user: 
 
     chunks = [photos[i:i + 10] for i in range(0, len(photos), 10)]
     last_group_message = None
-    for chunk in chunks:
-        media = [InputMediaPhoto(media=pid) for pid in chunk]
-        try:
-            messages = await callback.message.bot.send_media_group(chat_id=callback.from_user.id, media=media)
-            if messages:
-                last_group_message = messages[-1]
-        except Exception:
-            pass
+    if photos:
+        for chunk in chunks:
+            media = [InputMediaPhoto(media=pid) for pid in chunk]
+            try:
+                messages = await callback.message.bot.send_media_group(chat_id=callback.from_user.id, media=media)
+                if messages:
+                    last_group_message = messages[-1]
+            except Exception:
+                pass
+
+    if ai_media_items:
+        from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+        close_kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text='❌ Закрыть', callback_data='ai_faq_media_close')]])
+        for media in ai_media_items:
+            try:
+                caption = media.caption or ''
+                if media.media_type == 'photo':
+                    await callback.message.bot.send_photo(chat_id=callback.from_user.id, photo=media.file_id, caption=caption, parse_mode='HTML', reply_markup=close_kb)
+                elif media.media_type == 'video':
+                    await callback.message.bot.send_video(chat_id=callback.from_user.id, video=media.file_id, caption=caption, parse_mode='HTML', reply_markup=close_kb)
+                elif media.media_type == 'animation':
+                    await callback.message.bot.send_animation(chat_id=callback.from_user.id, animation=media.file_id, caption=caption, parse_mode='HTML', reply_markup=close_kb)
+                else:
+                    await callback.message.bot.send_document(chat_id=callback.from_user.id, document=media.file_id, caption=caption, parse_mode='HTML', reply_markup=close_kb)
+            except Exception:
+                pass
 
     if last_group_message:
         try:

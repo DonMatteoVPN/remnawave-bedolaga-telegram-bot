@@ -80,8 +80,28 @@ class AIFaqArticle(Base):
     created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(UTC), nullable=False)
     updated_at = Column(DateTime(timezone=True), default=lambda: datetime.now(UTC), onupdate=lambda: datetime.now(UTC), nullable=False)
 
+    # Связь с медиа-вложениями
+    media = relationship('AIFaqMedia', backref='article', cascade='all, delete-orphan', lazy='selectin')
+
     def __repr__(self):
         return f"<AIFaqArticle id={self.id} title={self.title}>"
+
+
+class AIFaqMedia(Base):
+    """Медиа-вложения для FAQ-статей (фото, видео, анимации)."""
+    __tablename__ = 'ai_faq_media'
+
+    id = Column(Integer, primary_key=True, index=True)
+    article_id = Column(Integer, ForeignKey('ai_faq_articles.id', ondelete='CASCADE'), nullable=False, index=True)
+    media_type = Column(String(20), nullable=False)  # 'photo' | 'video' | 'animation'
+    file_id = Column(String(512), nullable=False)     # Telegram file_id
+    caption = Column(String(1024), nullable=True)     # Описание медиа для ИИ
+    tag = Column(String(50), nullable=False, unique=True)  # Уникальный тег: 'setup_android'
+
+    created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(UTC), nullable=False)
+
+    def __repr__(self):
+        return f"<AIFaqMedia id={self.id} tag={self.tag} type={self.media_type}>"
 
 
 class AIProviderConfig(Base):

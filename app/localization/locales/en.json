@@ -1719,7 +1719,7 @@
   "WEBHOOK_DEVICE_DELETED": "📱 <b>Device removed</b>\n\nA device has been removed from your subscription: <code>{device}</code>",
   "WEBHOOK_CLOSE_BUTTON": "✖️ Close",
   "CLOSE_TICKET_BUTTON": "❌ Close Ticket",
-  "TICKET_CLOSED_CONFIRM": "✅ Are you sure you want to close this ticket?",
+  "TICKET_CLOSED_CONFIRM": "✅ Your ticket has been closed successfully!",
   "AI_TICKET_MESSAGE_RECEIVED": "📩 <b>Your message received!</b>\n\nOur AI assistant is already analyzing your question and will respond soon.\n\nPlease wait a moment.",
   "AI_TICKET_UNAVAILABLE": "⚠️ <b>AI Temporarily Unavailable</b>\n\nUnfortunately, the automated assistant cannot respond right now. Your message has been forwarded to a manager.\n\nWe will respond to you shortly.",
   "AI_TICKET_ERROR": "❌ <b>An error occurred</b>\n\nFailed to get a response from the AI. Your request has been forwarded to technical support.\n\nWe apologize for the inconvenience.",

@@ -199,9 +199,23 @@ async def handle_manager_callback(callback: types.CallbackQuery, bot: Bot):
             await db.commit()
 
             try:
+                from app.localization.texts import get_texts
+                user_lang = ticket.user.language if ticket.user else 'ru'
+                texts_user = get_texts(user_lang)
+                
+                close_kb = types.InlineKeyboardMarkup(
+                    inline_keyboard=[
+                        [
+                            types.InlineKeyboardButton(text=texts_user.t('CLOSE_MESSAGE_BTN', '❌ Закрыть'), callback_data='ai_faq_media_close'),
+                            types.InlineKeyboardButton(text=texts_user.t('MAIN_MENU_BUTTON', '🏠 На главную'), callback_data='back_to_menu')
+                        ]
+                    ]
+                )
+                
                 await bot.send_message(
                     chat_id=ticket.user.telegram_id,
                     text='✅ Ваше обращение закрыто. Спасибо!',
+                    reply_markup=close_kb
                 )
             except Exception:
                 pass

@@ -437,7 +437,7 @@ async def toggle_ai_enabled(callback: types.CallbackQuery, db_user: User, db: As
     from app.services.system_settings_service import BotConfigurationService
     new_state = not settings.SUPPORT_AI_ENABLED
     settings.SUPPORT_AI_ENABLED = new_state
-    await BotConfigurationService.set_value(db, 'SUPPORT_AI_ENABLED', str(new_state))
+    await BotConfigurationService.set_value(db, 'SUPPORT_AI_ENABLED', new_state)
     await callback.answer(f'AI: {"Вкл" if new_state else "Выкл"}', show_alert=False)
     await show_support_settings(callback, db_user, db)
 
