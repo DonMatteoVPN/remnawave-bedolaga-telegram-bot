@@ -240,6 +240,18 @@ class ForumService:
         return int(result.scalar() or 0)
 
     @staticmethod
+    async def get_user_tickets(
+        db: AsyncSession, user_id: int, statuses: list[str] | None = None, limit: int = 10, offset: int = 0
+    ) -> Sequence[ForumTicket]:
+        """Get ForumTickets for a user with pagination."""
+        stmt = select(ForumTicket).where(ForumTicket.user_id == user_id)
+        if statuses:
+            stmt = stmt.where(ForumTicket.status.in_(statuses))
+        stmt = stmt.order_by(ForumTicket.created_at.desc()).offset(offset).limit(limit)
+        result = await db.execute(stmt)
+        return result.scalars().all()
+
+    @staticmethod
     async def get_rich_user_context(db: AsyncSession, user_id: int) -> str:
         """
         Собирает максимально детальную информацию о профиле пользователя для ИИ.
