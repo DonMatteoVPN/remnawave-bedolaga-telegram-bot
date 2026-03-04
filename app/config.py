@@ -38,7 +38,7 @@ class Settings(BaseSettings):
 
     SUPPORT_USERNAME: str = '@support'
     SUPPORT_MENU_ENABLED: bool = True
-    SUPPORT_SYSTEM_MODE: str = 'both'  # one of: tickets, contact, both
+    SUPPORT_SYSTEM_MODE: str = 'tickets'  # one of: tickets, contact, both, ai_tiket
     # SLA for support tickets
     SUPPORT_TICKET_SLA_ENABLED: bool = True
     SUPPORT_TICKET_SLA_MINUTES: int = 5
@@ -2384,8 +2384,8 @@ class Settings(BaseSettings):
         return {'docs_url': None, 'redoc_url': None, 'openapi_url': None}
 
     def get_support_system_mode(self) -> str:
-        mode = (self.SUPPORT_SYSTEM_MODE or 'both').strip().lower()
-        return mode if mode in {'tickets', 'contact', 'both', 'ai_tiket'} else 'both'
+        mode = (self.SUPPORT_SYSTEM_MODE or 'tickets').strip().lower()
+        return mode if mode in {'tickets', 'contact', 'both', 'ai_tiket'} else 'tickets'
 
     def is_support_tickets_enabled(self) -> bool:
         return self.get_support_system_mode() in {'tickets', 'both', 'ai_tiket'}

@@ -53,7 +53,7 @@ class SupportSettingsService:
     def get_system_mode(cls) -> str:
         cls._load()
         mode = (cls._data.get('system_mode') or settings.get_support_system_mode()).strip().lower()
-        return mode if mode in {'tickets', 'contact', 'both', 'ai_tiket'} else 'both'
+        return mode if mode in {'tickets', 'contact', 'both', 'ai_tiket'} else 'tickets'
 
     @classmethod
     def set_system_mode(cls, mode: str) -> bool:

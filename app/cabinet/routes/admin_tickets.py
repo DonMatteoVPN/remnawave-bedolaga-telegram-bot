@@ -269,7 +269,9 @@ async def update_ticket_settings(
     if request.sla_reminder_cooldown_minutes is not None:
         settings.SUPPORT_TICKET_SLA_REMINDER_COOLDOWN_MINUTES = request.sla_reminder_cooldown_minutes
     if request.support_system_mode is not None:
-        SupportSettingsService.set_system_mode(request.support_system_mode.strip().lower())
+        mode_clean = request.support_system_mode.strip().lower()
+        SupportSettingsService.set_system_mode(mode_clean)
+        settings.SUPPORT_SYSTEM_MODE = mode_clean
 
     # Update cabinet notification settings
     if request.cabinet_user_notifications_enabled is not None:
