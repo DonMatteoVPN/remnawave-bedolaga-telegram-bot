@@ -63,15 +63,20 @@ def _get_support_settings_keyboard(language: str) -> types.InlineKeyboardMarkup:
                 text=mode_button('ADMIN_SUPPORT_SETTINGS_MODE_BOTH', 'Оба', mode == 'both'),
                 callback_data='admin_support_mode_both',
             ),
-        # >>> AI_TICKET_INTEGRATION_START
-        # DonMatteo-AI-Tiket mode button
-        types.InlineKeyboardButton(
-            text=mode_button('ADMIN_SUPPORT_SETTINGS_MODE_AI_TIKET', '🤖 AI Тикет', mode == 'ai_tiket'),
-            callback_data='admin_support_mode_ai_tiket',
-        ),
-        # <<< AI_TICKET_INTEGRATION_END
         ]
     )
+    
+    # >>> AI_TICKET_INTEGRATION_START
+    # DonMatteo-AI-Tiket - отдельная кнопка для режима AI
+    rows.append(
+        [
+            types.InlineKeyboardButton(
+                text=mode_button('ADMIN_SUPPORT_SETTINGS_MODE_AI_TIKET', '🤖 DonMatteo AI-Тикет', mode == 'ai_tiket'),
+                callback_data='admin_support_mode_ai_tiket',
+            ),
+        ]
+    )
+    # <<< AI_TICKET_INTEGRATION_END
 
     rows.append(
         [
@@ -384,6 +389,24 @@ async def set_mode_both(callback: types.CallbackQuery, db_user: User, db: AsyncS
     await show_support_settings(callback, db_user, db)
 
 
+# >>> AI_TICKET_INTEGRATION_START
+@admin_required
+@error_handler
+async def set_mode_ai_tiket(callback: types.CallbackQuery, db_user: User, db: AsyncSession):
+    """Установить режим DonMatteo AI-Tiket."""
+    from app.config import settings
+    from app.services.system_settings_service import BotConfigurationService
+    
+    SupportSettingsService.set_system_mode('ai_tiket')
+    
+    # Включаем AI автоматически при выборе этого режима
+    settings.SUPPORT_AI_ENABLED = True
+    await BotConfigurationService.set_value(db, 'SUPPORT_AI_ENABLED', 'True')
+    
+    await show_support_settings(callback, db_user, db)
+# <<< AI_TICKET_INTEGRATION_END
+
+
 @admin_required
 @error_handler
 async def start_edit_desc(callback: types.CallbackQuery, db_user: User, db: AsyncSession, state: FSMContext):
@@ -504,6 +527,9 @@ def register_handlers(dp: Dispatcher):
     dp.callback_query.register(set_mode_tickets, F.data == 'admin_support_mode_tickets')
     dp.callback_query.register(set_mode_contact, F.data == 'admin_support_mode_contact')
     dp.callback_query.register(set_mode_both, F.data == 'admin_support_mode_both')
+    # >>> AI_TICKET_INTEGRATION_START
+    dp.callback_query.register(set_mode_ai_tiket, F.data == 'admin_support_mode_ai_tiket')
+    # <<< AI_TICKET_INTEGRATION_END
     dp.callback_query.register(start_edit_desc, F.data == 'admin_support_edit_desc')
     dp.callback_query.register(send_desc_copy, F.data == 'admin_support_send_desc')
     dp.callback_query.register(delete_sent_message, F.data == 'admin_support_delete_msg')
