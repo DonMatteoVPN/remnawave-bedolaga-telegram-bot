@@ -1,12 +1,13 @@
 from math import ceil
-from typing import Any, TypeVar
+from typing import Any, Generic, TypeVar, List
 
 
 T = TypeVar('T')
 
 
-class PaginationResult[T]:
-    def __init__(self, items: list[T], total_count: int, page: int, per_page: int):
+class PaginationResult(Generic[T]):
+    """Результат пагинации - совместимо с Python 3.11+"""
+    def __init__(self, items: List[T], total_count: int, page: int, per_page: int):
         self.items = items
         self.total_count = total_count
         self.page = page
@@ -18,7 +19,7 @@ class PaginationResult[T]:
         self.next_page = page + 1 if self.has_next else None
 
 
-def paginate_list[T](items: list[T], page: int = 1, per_page: int = 10) -> PaginationResult[T]:
+def paginate_list(items: List[T], page: int = 1, per_page: int = 10) -> PaginationResult[T]:
     total_count = len(items)
 
     start_index = (page - 1) * per_page

@@ -173,6 +173,13 @@ async def setup_bot() -> tuple[Bot, Dispatcher]:
     support.register_handlers(dp)
     server_status.register_handlers(dp)
     tickets.register_handlers(dp)
+    # >>> AI_TICKET_INTEGRATION_START
+    # DonMatteo-AI-Tiket: register manager-side Forum group handler
+    if settings.SUPPORT_AI_FORUM_ID:
+        from app.modules.ai_ticket.handlers.manager import register_manager_handlers
+        register_manager_handlers(dp)
+        logger.info('🤖 AI-Tiket менеджер-обработчик зарегистрирован', forum_id=settings.SUPPORT_AI_FORUM_ID)
+    # <<< AI_TICKET_INTEGRATION_END
     admin_main.register_handlers(dp)
     admin_users.register_handlers(dp)
     admin_subscriptions.register_handlers(dp)
@@ -197,6 +204,13 @@ async def setup_bot() -> tuple[Bot, Dispatcher]:
     admin_system_logs.register_handlers(dp)
     admin_welcome_text.register_welcome_text_handlers(dp)
     admin_tickets.register_handlers(dp)
+    # >>> AI_TICKET_INTEGRATION_START
+    # DonMatteo-AI-Tiket: register manager-side Forum group handler
+    if settings.SUPPORT_AI_FORUM_ID:
+        from app.modules.ai_ticket.handlers.manager import register_manager_handlers
+        register_manager_handlers(dp)
+        logger.info('🤖 AI-Tiket менеджер-обработчик зарегистрирован', forum_id=settings.SUPPORT_AI_FORUM_ID)
+    # <<< AI_TICKET_INTEGRATION_END
     admin_reports.register_handlers(dp)
     admin_bot_configuration.register_handlers(dp)
     admin_pricing.register_handlers(dp)

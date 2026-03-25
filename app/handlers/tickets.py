@@ -41,6 +41,63 @@ async def show_ticket_priority_selection(
     """Начать создание тикета без выбора приоритета: сразу просим заголовок"""
     texts = get_texts(db_user.language)
 
+    # >>> AI_TICKET_INTEGRATION_START
+    # --- DonMatteo-AI-Tiket routing guard ---
+    from app.services.support_settings_service import SupportSettingsService
+    from app.config import settings
+    
+    mode = SupportSettingsService.get_system_mode()
+    
+    # Фоллбек: если режим ai_tiket, но ID форума не настроен — откатываемся на стандартные тикеты
+    if mode == 'ai_tiket' and not settings.SUPPORT_AI_FORUM_ID:
+        logger.warning('tickets.ai_forum_id_not_set_fallback_to_standard', user_id=callback.from_user.id)
+        try:
+            from app.services.admin_notification_service import AdminNotificationService
+            admin_notify = AdminNotificationService(callback.bot)
+            await admin_notify.send_ticket_event_notification(
+                '⚠️ <b>ВНИМАНИЕ:</b> Режим AI-тикетов включен, но ID форума (SUPPORT_AI_FORUM_ID) не настроен!\n'
+                'Тикеты автоматически перенаправлены в стандартную систему.'
+            )
+        except Exception as e:
+            logger.error('tickets.admin_notify_failed', error=str(e))
+        mode = 'tickets'
+
+    if mode == 'ai_tiket':
+        from app.modules.ai_ticket.handlers.client import handle_ai_ticket_message
+
+        await callback.answer()
+        service_name = settings.BOT_USERNAME or 'Техподдержка'
+        
+        # Динамический текст в зависимости от активности ИИ
+        if settings.SUPPORT_AI_ENABLED:
+            prompt_text = (
+                f'🤖 <b>{service_name}</b>\n\n'
+                'Напишите ваш вопрос или опишите проблему — '
+                'AI-ассистент ответит моментально.'
+            )
+        else:
+            prompt_text = (
+                f'👤 <b>{service_name}</b>\n\n'
+                'Напишите ваш вопрос или опишите проблему — '
+                'наши менеджеры ответят вам в ближайшее время.'
+            )
+            
+        cancel_kb = get_ticket_cancel_keyboard(db_user.language)
+        
+        try:
+            await callback.message.edit_text(prompt_text, reply_markup=cancel_kb, parse_mode='HTML')
+        except TelegramBadRequest:
+            try:
+                await callback.message.delete()
+            except Exception:
+                pass
+            await callback.message.answer(prompt_text, reply_markup=cancel_kb, parse_mode='HTML')
+            
+        await state.set_state('ai_ticket_waiting_message')
+        return
+    # --- End routing guard ---
+    # <<< AI_TICKET_INTEGRATION_END
+
     # Глобальный блок и наличие активного тикета
     from app.database.crud.ticket import TicketCRUD
 
@@ -309,6 +366,88 @@ async def handle_ticket_message_input(message: types.Message, state: FSMContext,
         await message.answer(
             texts.t('TICKET_CREATE_ERROR', '❌ Произошла ошибка при создании тикета. Попробуйте позже.')
         )
+
+
+# >>> AI_TICKET_INTEGRATION_START
+async def _create_standard_ticket_fallback(
+    message: types.Message,
+    db: AsyncSession,
+    db_user: User,
+    user_text: str,
+) -> None:
+    """
+    Фоллбек: создать стандартный тикет когда AI-Ticket Forum недоступен.
+    Вызывается из ai_ticket/handlers/client.py при ошибке Forum.
+    """
+    logger.info('tickets.fallback_creating_standard_ticket', user_id=db_user.id)
+    texts = get_texts(db_user.language)
+    
+    # Извлекаем медиа если есть
+    media_type = None
+    media_file_id = None
+    media_caption = None
+    if message.photo:
+        media_type = 'photo'
+        media_file_id = message.photo[-1].file_id
+        media_caption = message.caption
+    
+    try:
+        # Создаём заголовок из первых 100 символов сообщения
+        title = user_text[:100] if user_text else 'Обращение в поддержку'
+        if len(user_text) > 100:
+            title = title.rstrip() + '...'
+        
+        ticket = await TicketCRUD.create_ticket(
+            db,
+            db_user.id,
+            title,
+            user_text or '(вложение)',
+            'normal',
+            media_type=media_type,
+            media_file_id=media_file_id,
+            media_caption=media_caption,
+        )
+        
+        # Сообщаем пользователю
+        import html
+        safe_title = html.escape(title if len(title) <= 200 else (title[:197] + '...'))
+        creation_text = (
+            f'✅ <b>Тикет #{ticket.id} создан</b>\n\n'
+            f'📝 Заголовок: {safe_title}\n'
+            f'📊 Статус: {ticket.status_emoji} '
+            f'{texts.t("TICKET_STATUS_OPEN", "Открыт")}\n'
+            f'📅 Создан: {format_local_datetime(ticket.created_at, "%d.%m.%Y %H:%M")}\n'
+            + ('📎 Вложение: фото\n' if media_type == 'photo' else '')
+            + '\n<i>⚠️ AI-ассистент временно недоступен, ваш тикет передан менеджерам.</i>'
+        )
+        
+        keyboard = types.InlineKeyboardMarkup(
+            inline_keyboard=[
+                [
+                    types.InlineKeyboardButton(
+                        text=texts.t('VIEW_TICKET', '👁️ Посмотреть тикет'), callback_data=f'view_ticket_{ticket.id}'
+                    )
+                ],
+                [
+                    types.InlineKeyboardButton(
+                        text=texts.t('BACK_TO_MENU', '🏠 В главное меню'), callback_data='back_to_menu'
+                    )
+                ],
+            ]
+        )
+        await message.answer(creation_text, reply_markup=keyboard, parse_mode='HTML')
+        
+        # Уведомить админов
+        await notify_admins_about_new_ticket(ticket, db)
+        
+        logger.info('tickets.fallback_ticket_created', ticket_id=ticket.id, user_id=db_user.id)
+        
+    except Exception as e:
+        logger.error('tickets.fallback_create_failed', error=str(e), user_id=db_user.id)
+        await message.answer(
+            texts.t('TICKET_CREATE_ERROR', '❌ Произошла ошибка при создании тикета. Попробуйте позже.')
+        )
+# <<< AI_TICKET_INTEGRATION_END
 
 
 async def show_my_tickets(callback: types.CallbackQuery, db_user: User, db: AsyncSession):
@@ -1152,3 +1291,17 @@ def register_handlers(dp: Dispatcher):
 
     # Закрытие уведомлений
     dp.callback_query.register(close_ticket_notification, F.data.startswith('close_ticket_notification_'))
+
+    # >>> AI_TICKET_INTEGRATION_START
+    # --- DonMatteo-AI-Tiket handlers ---
+    from app.modules.ai_ticket.handlers.client import register_client_handlers
+    from aiogram.filters import StateFilter
+    register_client_handlers(dp)
+    
+    # --- DonMatteo-AI-Tiket state proxy ---
+    @dp.message(StateFilter('ai_ticket_waiting_message'))
+    async def _ai_ticket_message_proxy(message: types.Message, state: FSMContext, db: AsyncSession, db_user: User):
+        from app.modules.ai_ticket.handlers.client import handle_ai_ticket_message
+        logger.info('ai_ticket_proxy.triggered', user_id=db_user.id, state=await state.get_state())
+        await handle_ai_ticket_message(message, message.bot, db, db_user)
+    # <<< AI_TICKET_INTEGRATION_END

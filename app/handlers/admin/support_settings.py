@@ -63,6 +63,13 @@ def _get_support_settings_keyboard(language: str) -> types.InlineKeyboardMarkup:
                 text=mode_button('ADMIN_SUPPORT_SETTINGS_MODE_BOTH', 'Оба', mode == 'both'),
                 callback_data='admin_support_mode_both',
             ),
+        # >>> AI_TICKET_INTEGRATION_START
+        # DonMatteo-AI-Tiket mode button
+        types.InlineKeyboardButton(
+            text=mode_button('ADMIN_SUPPORT_SETTINGS_MODE_AI_TIKET', '🤖 AI Тикет', mode == 'ai_tiket'),
+            callback_data='admin_support_mode_ai_tiket',
+        ),
+        # <<< AI_TICKET_INTEGRATION_END
         ]
     )
 

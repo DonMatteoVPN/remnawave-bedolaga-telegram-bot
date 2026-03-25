@@ -417,6 +417,9 @@ class BotConfigurationService:
             ChoiceOption('tickets', '🎫 Только тикеты'),
             ChoiceOption('contact', '💬 Только контакт'),
             ChoiceOption('both', '🔁 Оба варианта'),
+            # >>> AI_TICKET_INTEGRATION_START
+            ChoiceOption('ai_tiket', '🤖 DonMatteo-AI-Tiket'),
+            # <<< AI_TICKET_INTEGRATION_END
         ],
         'CONNECT_BUTTON_MODE': [
             ChoiceOption('guide', '📘 Гайд'),

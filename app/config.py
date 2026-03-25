@@ -38,7 +38,12 @@ class Settings(BaseSettings):
 
     SUPPORT_USERNAME: str = '@support'
     SUPPORT_MENU_ENABLED: bool = True
-    SUPPORT_SYSTEM_MODE: str = 'both'  # one of: tickets, contact, both
+    SUPPORT_SYSTEM_MODE: str = 'both'  # one of: tickets, contact, both, ai_tiket
+    # >>> AI_TICKET_INTEGRATION_START
+    # DonMatteo-AI-Tiket settings
+    SUPPORT_AI_ENABLED: bool = False
+    SUPPORT_AI_FORUM_ID: str | None = None  # Telegram Forum group ID (-100xxx)
+    # <<< AI_TICKET_INTEGRATION_END
     # SLA for support tickets
     SUPPORT_TICKET_SLA_ENABLED: bool = True
     SUPPORT_TICKET_SLA_MINUTES: int = 5

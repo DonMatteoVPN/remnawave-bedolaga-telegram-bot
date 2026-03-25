@@ -3372,3 +3372,8 @@ class NewsTag(Base):
 
     def __repr__(self) -> str:
         return f"<NewsTag id={self.id} name='{self.name}'>"
+
+# >>> AI_TICKET_INTEGRATION_START
+# DonMatteo-AI-Tiket: импорт моделей для регистрации в SQLAlchemy
+import app.database.models_ai_ticket  # noqa: F401, E402
+# <<< AI_TICKET_INTEGRATION_END
