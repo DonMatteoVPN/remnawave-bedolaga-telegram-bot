@@ -76,6 +76,32 @@ def _get_support_settings_keyboard(language: str) -> types.InlineKeyboardMarkup:
             ),
         ]
     )
+    # DonMatteo-AI-Tiket: Показываем кнопки настроек AI когда режим ai_tiket активен
+    if mode == 'ai_tiket':
+        rows.append(
+            [
+                types.InlineKeyboardButton(
+                    text='🤖 AI-Провайдеры',
+                    callback_data='ai_providers_list',
+                ),
+                types.InlineKeyboardButton(
+                    text='📚 FAQ-Статьи',
+                    callback_data='ai_faq_list',
+                ),
+            ]
+        )
+        rows.append(
+            [
+                types.InlineKeyboardButton(
+                    text='💬 Системный промпт',
+                    callback_data='aip_prompt',
+                ),
+                types.InlineKeyboardButton(
+                    text='🎯 Forum Group ID',
+                    callback_data='ai_forum_id_settings',
+                ),
+            ]
+        )
     # <<< AI_TICKET_INTEGRATION_END
 
     rows.append(
@@ -404,6 +430,125 @@ async def set_mode_ai_tiket(callback: types.CallbackQuery, db_user: User, db: As
     await BotConfigurationService.set_value(db, 'SUPPORT_AI_ENABLED', 'True')
     
     await show_support_settings(callback, db_user, db)
+
+
+class AIForumSettingsStates(StatesGroup):
+    """Состояния для настройки Forum ID."""
+    waiting_for_forum_id = State()
+
+
+@admin_required
+@error_handler
+async def show_ai_forum_settings(callback: types.CallbackQuery, db_user: User, db: AsyncSession, state: FSMContext):
+    """Показать настройки Forum ID."""
+    from app.services.system_settings_service import BotConfigurationService
+    
+    current_forum_id = BotConfigurationService.get_current_value('SUPPORT_AI_FORUM_ID') or 'Не задан'
+    
+    text = (
+        '<b>🎯 Настройка Forum Group ID</b>\n\n'
+        f'<b>Текущий ID:</b> <code>{current_forum_id}</code>\n\n'
+        '<i>Это ID Telegram-группы с форумами, куда будут пересылаться тикеты.\n'
+        'Формат: -100xxxxxxxxxx\n\n'
+        'Бот должен быть администратором группы с правами на создание топиков.</i>'
+    )
+    
+    kb = types.InlineKeyboardMarkup(inline_keyboard=[
+        [types.InlineKeyboardButton(text='✏️ Изменить Forum ID', callback_data='ai_forum_id_edit')],
+        [types.InlineKeyboardButton(text='🧪 Проверить подключение', callback_data='ai_forum_id_test')],
+        [types.InlineKeyboardButton(text='« Назад', callback_data='admin_support_settings')],
+    ])
+    
+    await callback.message.edit_text(text, reply_markup=kb, parse_mode='HTML')
+
+
+@admin_required
+@error_handler
+async def start_edit_forum_id(callback: types.CallbackQuery, db_user: User, db: AsyncSession, state: FSMContext):
+    """Начать редактирование Forum ID."""
+    await state.set_state(AIForumSettingsStates.waiting_for_forum_id)
+    
+    text = (
+        '<b>✏️ Введите Forum Group ID</b>\n\n'
+        'Формат: <code>-100xxxxxxxxxx</code>\n\n'
+        '<i>Как получить ID:\n'
+        '1. Создайте группу с темами (Enable Topics)\n'
+        '2. Добавьте бота @getmyid_bot в группу\n'
+        '3. Скопируйте Chat ID</i>'
+    )
+    
+    kb = types.InlineKeyboardMarkup(inline_keyboard=[
+        [types.InlineKeyboardButton(text='❌ Отмена', callback_data='ai_forum_id_settings')],
+    ])
+    
+    await callback.message.edit_text(text, reply_markup=kb, parse_mode='HTML')
+
+
+@admin_required
+@error_handler
+async def handle_forum_id_input(message: types.Message, db_user: User, db: AsyncSession, state: FSMContext):
+    """Обработка ввода Forum ID."""
+    from app.services.system_settings_service import BotConfigurationService
+    from app.config import settings
+    
+    forum_id = message.text.strip()
+    
+    # Валидация формата
+    if not forum_id.startswith('-100') or not forum_id[1:].isdigit():
+        await message.answer(
+            '❌ Неверный формат ID.\n'
+            'Правильный формат: <code>-100xxxxxxxxxx</code>',
+            parse_mode='HTML'
+        )
+        return
+    
+    # Сохраняем
+    settings.SUPPORT_AI_FORUM_ID = forum_id
+    await BotConfigurationService.set_value(db, 'SUPPORT_AI_FORUM_ID', forum_id)
+    
+    await state.clear()
+    
+    await message.answer(
+        f'✅ Forum ID сохранён: <code>{forum_id}</code>\n\n'
+        'Теперь тикеты будут пересылаться в эту группу.',
+        parse_mode='HTML'
+    )
+
+
+@admin_required
+@error_handler
+async def test_forum_connection(callback: types.CallbackQuery, db_user: User, db: AsyncSession):
+    """Проверить подключение к Forum группе."""
+    from app.services.system_settings_service import BotConfigurationService
+    
+    forum_id_str = BotConfigurationService.get_current_value('SUPPORT_AI_FORUM_ID')
+    
+    if not forum_id_str:
+        await callback.answer('❌ Forum ID не задан!', show_alert=True)
+        return
+    
+    try:
+        forum_id = int(forum_id_str)
+        # Пробуем создать тестовый топик
+        from aiogram import Bot
+        bot: Bot = callback.bot
+        
+        topic = await bot.create_forum_topic(
+            chat_id=forum_id,
+            name='🧪 Тест подключения'
+        )
+        
+        await bot.send_message(
+            chat_id=forum_id,
+            message_thread_id=topic.message_thread_id,
+            text='✅ Подключение успешно!\n\nЭтот топик можно удалить.'
+        )
+        
+        await callback.answer('✅ Подключение успешно! Тестовый топик создан.', show_alert=True)
+        
+    except Exception as e:
+        logger.error('ai_forum_test_failed', error=str(e))
+        await callback.answer(f'❌ Ошибка: {str(e)[:100]}', show_alert=True)
 # <<< AI_TICKET_INTEGRATION_END
 
 
@@ -529,6 +674,11 @@ def register_handlers(dp: Dispatcher):
     dp.callback_query.register(set_mode_both, F.data == 'admin_support_mode_both')
     # >>> AI_TICKET_INTEGRATION_START
     dp.callback_query.register(set_mode_ai_tiket, F.data == 'admin_support_mode_ai_tiket')
+    # DonMatteo-AI-Tiket: настройки Forum ID
+    dp.callback_query.register(show_ai_forum_settings, F.data == 'ai_forum_id_settings')
+    dp.callback_query.register(start_edit_forum_id, F.data == 'ai_forum_id_edit')
+    dp.callback_query.register(test_forum_connection, F.data == 'ai_forum_id_test')
+    dp.message.register(handle_forum_id_input, AIForumSettingsStates.waiting_for_forum_id)
     # DonMatteo-AI-Tiket: регистрация админ-хендлеров для провайдеров и FAQ
     from app.modules.ai_ticket.handlers.ai_provider_admin import register_ai_provider_handlers
     from app.modules.ai_ticket.handlers.faq_admin import register_faq_handlers

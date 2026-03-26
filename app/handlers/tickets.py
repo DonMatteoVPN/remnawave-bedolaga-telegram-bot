@@ -48,8 +48,14 @@ async def show_ticket_priority_selection(
     
     mode = SupportSettingsService.get_system_mode()
     
+    # >>> AI_TICKET_INTEGRATION: Читаем Forum ID из BotConfigurationService
+    forum_id_configured = settings.SUPPORT_AI_FORUM_ID
+    if not forum_id_configured:
+        from app.services.system_settings_service import BotConfigurationService
+        forum_id_configured = BotConfigurationService.get_current_value('SUPPORT_AI_FORUM_ID')
+    
     # Фоллбек: если режим ai_tiket, но ID форума не настроен — откатываемся на стандартные тикеты
-    if mode == 'ai_tiket' and not settings.SUPPORT_AI_FORUM_ID:
+    if mode == 'ai_tiket' and not forum_id_configured:
         logger.warning('tickets.ai_forum_id_not_set_fallback_to_standard', user_id=callback.from_user.id)
         try:
             from app.services.admin_notification_service import AdminNotificationService
