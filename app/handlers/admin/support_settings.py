@@ -102,6 +102,15 @@ def _get_support_settings_keyboard(language: str) -> types.InlineKeyboardMarkup:
                 ),
             ]
         )
+        # Кнопка просмотра AI-тикетов
+        rows.append(
+            [
+                types.InlineKeyboardButton(
+                    text='🎫 AI-Тикеты',
+                    callback_data='admin_ai_tickets',
+                ),
+            ]
+        )
     # <<< AI_TICKET_INTEGRATION_END
 
     rows.append(
@@ -682,11 +691,13 @@ def register_handlers(dp: Dispatcher):
     dp.callback_query.register(start_edit_forum_id, F.data == 'ai_forum_id_edit')
     dp.callback_query.register(test_forum_connection, F.data == 'ai_forum_id_test')
     dp.message.register(handle_forum_id_input, AIForumSettingsStates.waiting_for_forum_id)
-    # DonMatteo-AI-Tiket: регистрация админ-хендлеров для провайдеров и FAQ
+    # DonMatteo-AI-Tiket: регистрация админ-хендлеров для провайдеров, FAQ и тикетов
     from app.modules.ai_ticket.handlers.ai_provider_admin import register_ai_provider_handlers
     from app.modules.ai_ticket.handlers.faq_admin import register_faq_handlers
+    from app.modules.ai_ticket.handlers.admin_tickets import register_admin_ticket_handlers
     register_ai_provider_handlers(dp)
     register_faq_handlers(dp)
+    register_admin_ticket_handlers(dp)
     # <<< AI_TICKET_INTEGRATION_END
     dp.callback_query.register(start_edit_desc, F.data == 'admin_support_edit_desc')
     dp.callback_query.register(send_desc_copy, F.data == 'admin_support_send_desc')

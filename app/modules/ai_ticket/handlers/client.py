@@ -419,9 +419,13 @@ async def handle_view_forum_ticket(
     db: AsyncSession,
     db_user: User,
 ) -> None:
-    """Пользователь нажал 'Посмотреть тикет' — показываем историю сообщений."""
+    """Пользователь нажал 'Посмотреть тикет' — показываем полную историю сообщений."""
     data = callback.data or ''
-    ticket_id = int(data.replace('view_forum_ticket_', ''))
+    
+    # Парсим ticket_id и страницу
+    parts = data.replace('view_forum_ticket_', '').split('_page_')
+    ticket_id = int(parts[0])
+    page = int(parts[1]) if len(parts) > 1 else 1
     
     from app.database.models_ai_ticket import ForumTicket, ForumTicketMessage
     
@@ -433,28 +437,91 @@ async def handle_view_forum_ticket(
         await callback.answer('Тикет не найден', show_alert=True)
         return
     
-    # Получаем историю сообщений
+    # Получаем ВСЮ историю сообщений
     stmt_msgs = select(ForumTicketMessage).where(
         ForumTicketMessage.ticket_id == ticket_id
-    ).order_by(ForumTicketMessage.created_at.asc()).limit(20)
+    ).order_by(ForumTicketMessage.created_at.asc())
     msgs_result = await db.execute(stmt_msgs)
-    messages = msgs_result.scalars().all()
+    all_messages = msgs_result.scalars().all()
+    
+    # Пагинация: 5 сообщений на страницу
+    per_page = 5
+    total_msgs = len(all_messages)
+    total_pages = max(1, (total_msgs + per_page - 1) // per_page)
+    page = max(1, min(page, total_pages))
+    start_idx = (page - 1) * per_page
+    messages = all_messages[start_idx:start_idx + per_page]
     
     status_emoji = '🟢' if ticket.status == 'open' else '🔴'
     ai_emoji = '🤖' if ticket.ai_enabled else '👤'
+    texts = get_texts(db_user.language)
     
     history_text = f'<b>🎫 Тикет #{ticket.id}</b> {status_emoji}\n'
-    history_text += f'<i>Режим: {ai_emoji}</i>\n\n'
+    history_text += f'<i>Режим: {ai_emoji} | Сообщений: {total_msgs} | Стр. {page}/{total_pages}</i>\n'
+    history_text += '─' * 20 + '\n\n'
     
-    for msg in messages[-10:]:  # Последние 10 сообщений
+    for msg in messages:
         role_icon = '👤' if msg.role == 'user' else ('🤖' if msg.role == 'ai' else '👨‍💻')
-        content = msg.content[:200] + '...' if len(msg.content) > 200 else msg.content
-        history_text += f'{role_icon} {content}\n\n'
+        role_name = 'Вы' if msg.role == 'user' else ('AI' if msg.role == 'ai' else 'Менеджер')
+        time_str = msg.created_at.strftime('%d.%m %H:%M') if msg.created_at else ''
+        
+        # Полное содержимое сообщения (без обрезки)
+        content = msg.content or ''
+        # Экранируем HTML
+        import html as html_module
+        content = html_module.escape(content)
+        
+        history_text += f'<b>{role_icon} {role_name}</b> <i>({time_str})</i>\n'
+        history_text += f'{content}\n\n'
     
-    if not messages:
+    if not all_messages:
         history_text += '<i>Нет сообщений</i>'
     
-    kb = get_user_reply_kb(ticket.id, lang=db_user.language, show_call_manager=ticket.ai_enabled and ticket.status == 'open')
+    # Клавиатура с пагинацией
+    kb_rows = []
+    
+    # Кнопки пагинации
+    if total_pages > 1:
+        nav_row = []
+        if page > 1:
+            nav_row.append(types.InlineKeyboardButton(
+                text='◀️ Назад',
+                callback_data=f'view_forum_ticket_{ticket_id}_page_{page-1}'
+            ))
+        nav_row.append(types.InlineKeyboardButton(
+            text=f'{page}/{total_pages}',
+            callback_data='noop'
+        ))
+        if page < total_pages:
+            nav_row.append(types.InlineKeyboardButton(
+                text='Вперёд ▶️',
+                callback_data=f'view_forum_ticket_{ticket_id}_page_{page+1}'
+            ))
+        kb_rows.append(nav_row)
+    
+    # Кнопка ответа (если тикет открыт)
+    if ticket.status == 'open':
+        kb_rows.append([
+            types.InlineKeyboardButton(
+                text=texts.t('REPLY_TO_TICKET', '💬 Ответить'),
+                callback_data=f'reply_forum_ticket_{ticket_id}'
+            )
+        ])
+        # Вызвать менеджера (если AI включён)
+        if ticket.ai_enabled:
+            kb_rows.append([
+                types.InlineKeyboardButton(
+                    text=texts.get('AI_TICKET_CALL_MANAGER', '🆘 Вызвать менеджера'),
+                    callback_data=f'ai_ticket_call_manager:{ticket_id}'
+                )
+            ])
+    
+    kb_rows.append([
+        types.InlineKeyboardButton(text='🎫 Мои обращения', callback_data='my_tickets'),
+        types.InlineKeyboardButton(text=texts.get('MAIN_MENU_BUTTON', '🏠 Главное меню'), callback_data='menu_support')
+    ])
+    
+    kb = types.InlineKeyboardMarkup(inline_keyboard=kb_rows)
     
     try:
         await callback.message.edit_text(history_text, reply_markup=kb, parse_mode='HTML')
