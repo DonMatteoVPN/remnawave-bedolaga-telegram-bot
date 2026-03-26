@@ -82,11 +82,11 @@ def _get_support_settings_keyboard(language: str) -> types.InlineKeyboardMarkup:
             [
                 types.InlineKeyboardButton(
                     text='🤖 AI-Провайдеры',
-                    callback_data='ai_providers_list',
+                    callback_data='aip_list',
                 ),
                 types.InlineKeyboardButton(
                     text='📚 FAQ-Статьи',
-                    callback_data='ai_faq_list',
+                    callback_data='admin_support_ai_faq',
                 ),
             ]
         )
@@ -113,81 +113,84 @@ def _get_support_settings_keyboard(language: str) -> types.InlineKeyboardMarkup:
         ]
     )
 
-    # Notifications block
-    rows.append(
-        [
-            types.InlineKeyboardButton(
-                text=(
-                    f'{"🔔" if admin_notif else "🔕"} '
-                    f'{texts.t("ADMIN_SUPPORT_SETTINGS_ADMIN_NOTIFICATIONS", "Админ-уведомления")}: '
-                    f'{status_enabled if admin_notif else status_disabled}'
-                ),
-                callback_data='admin_support_toggle_admin_notifications',
-            )
-        ]
-    )
-    rows.append(
-        [
-            types.InlineKeyboardButton(
-                text=(
-                    f'{"🔔" if user_notif else "🔕"} '
-                    f'{texts.t("ADMIN_SUPPORT_SETTINGS_USER_NOTIFICATIONS", "Пользовательские уведомления")}: '
-                    f'{status_enabled if user_notif else status_disabled}'
-                ),
-                callback_data='admin_support_toggle_user_notifications',
-            )
-        ]
-    )
+    # >>> AI_TICKET_INTEGRATION: Скрываем ненужные настройки для режима ai_tiket
+    if mode != 'ai_tiket':
+        # Notifications block (только для стандартных тикетов)
+        rows.append(
+            [
+                types.InlineKeyboardButton(
+                    text=(
+                        f'{"🔔" if admin_notif else "🔕"} '
+                        f'{texts.t("ADMIN_SUPPORT_SETTINGS_ADMIN_NOTIFICATIONS", "Админ-уведомления")}: '
+                        f'{status_enabled if admin_notif else status_disabled}'
+                    ),
+                    callback_data='admin_support_toggle_admin_notifications',
+                )
+            ]
+        )
+        rows.append(
+            [
+                types.InlineKeyboardButton(
+                    text=(
+                        f'{"🔔" if user_notif else "🔕"} '
+                        f'{texts.t("ADMIN_SUPPORT_SETTINGS_USER_NOTIFICATIONS", "Пользовательские уведомления")}: '
+                        f'{status_enabled if user_notif else status_disabled}'
+                    ),
+                    callback_data='admin_support_toggle_user_notifications',
+                )
+            ]
+        )
 
-    # SLA block
-    rows.append(
-        [
-            types.InlineKeyboardButton(
-                text=(
-                    f'{"⏰" if sla_enabled else "⏹️"} '
-                    f'{texts.t("ADMIN_SUPPORT_SETTINGS_SLA_LABEL", "SLA")}: '
-                    f'{status_enabled if sla_enabled else status_disabled}'
-                ),
-                callback_data='admin_support_toggle_sla',
-            )
-        ]
-    )
-    rows.append(
-        [
-            types.InlineKeyboardButton(
-                text=texts.t('ADMIN_SUPPORT_SETTINGS_SLA_TIME', '⏳ Время SLA: {minutes} мин').format(
-                    minutes=sla_minutes
-                ),
-                callback_data='admin_support_set_sla_minutes',
-            )
-        ]
-    )
+        # SLA block (только для стандартных тикетов)
+        rows.append(
+            [
+                types.InlineKeyboardButton(
+                    text=(
+                        f'{"⏰" if sla_enabled else "⏹️"} '
+                        f'{texts.t("ADMIN_SUPPORT_SETTINGS_SLA_LABEL", "SLA")}: '
+                        f'{status_enabled if sla_enabled else status_disabled}'
+                    ),
+                    callback_data='admin_support_toggle_sla',
+                )
+            ]
+        )
+        rows.append(
+            [
+                types.InlineKeyboardButton(
+                    text=texts.t('ADMIN_SUPPORT_SETTINGS_SLA_TIME', '⏳ Время SLA: {minutes} мин').format(
+                        minutes=sla_minutes
+                    ),
+                    callback_data='admin_support_set_sla_minutes',
+                )
+            ]
+        )
 
-    # Moderators
-    moderators = SupportSettingsService.get_moderators()
-    mod_count = len(moderators)
-    rows.append(
-        [
-            types.InlineKeyboardButton(
-                text=texts.t('ADMIN_SUPPORT_SETTINGS_MODERATORS_COUNT', '🧑‍⚖️ Модераторы: {count}').format(
-                    count=mod_count
+        # Moderators (только для стандартных тикетов)
+        moderators = SupportSettingsService.get_moderators()
+        mod_count = len(moderators)
+        rows.append(
+            [
+                types.InlineKeyboardButton(
+                    text=texts.t('ADMIN_SUPPORT_SETTINGS_MODERATORS_COUNT', '🧑‍⚖️ Модераторы: {count}').format(
+                        count=mod_count
+                    ),
+                    callback_data='admin_support_list_moderators',
+                )
+            ]
+        )
+        rows.append(
+            [
+                types.InlineKeyboardButton(
+                    text=texts.t('ADMIN_SUPPORT_SETTINGS_ADD_MODERATOR', '➕ Назначить модератора'),
+                    callback_data='admin_support_add_moderator',
                 ),
-                callback_data='admin_support_list_moderators',
-            )
-        ]
-    )
-    rows.append(
-        [
-            types.InlineKeyboardButton(
-                text=texts.t('ADMIN_SUPPORT_SETTINGS_ADD_MODERATOR', '➕ Назначить модератора'),
-                callback_data='admin_support_add_moderator',
-            ),
-            types.InlineKeyboardButton(
-                text=texts.t('ADMIN_SUPPORT_SETTINGS_REMOVE_MODERATOR', '➖ Удалить модератора'),
-                callback_data='admin_support_remove_moderator',
-            ),
-        ]
-    )
+                types.InlineKeyboardButton(
+                    text=texts.t('ADMIN_SUPPORT_SETTINGS_REMOVE_MODERATOR', '➖ Удалить модератора'),
+                    callback_data='admin_support_remove_moderator',
+                ),
+            ]
+        )
+    # <<< AI_TICKET_INTEGRATION: Конец блока условия
 
     rows.append([types.InlineKeyboardButton(text=texts.BACK, callback_data='admin_submenu_support')])
 

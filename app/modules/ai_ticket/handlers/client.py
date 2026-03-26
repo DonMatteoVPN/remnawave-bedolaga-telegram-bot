@@ -156,9 +156,9 @@ async def handle_ai_ticket_message(
     # 6. Мгновенная обратная связь пользователю
     status_text = texts.t('AI_TICKET_MESSAGE_RECEIVED', '⏳ <b>Ваше сообщение получено.</b>')
     if should_run_ai:
-        status_text += f"\n\n<i>ИИ-ассистент обдумывает ответ...</i>"
+        status_text += "\n\n<i>ИИ-ассистент обдумывает ответ...</i>"
     else:
-        status_text += f"\n\n<i>Менеджеры уведомлены и скоро ответят.</i>"
+        status_text += "\n\n<i>Менеджеры уведомлены и скоро ответят.</i>"
 
     status_msg = await message.answer(
         status_text,
@@ -413,8 +413,151 @@ async def handle_close_media(callback: types.CallbackQuery) -> None:
     await callback.answer()
 
 
+async def handle_view_forum_ticket(
+    callback: types.CallbackQuery,
+    bot: Bot,
+    db: AsyncSession,
+    db_user: User,
+) -> None:
+    """Пользователь нажал 'Посмотреть тикет' — показываем историю сообщений."""
+    data = callback.data or ''
+    ticket_id = int(data.replace('view_forum_ticket_', ''))
+    
+    from app.database.models_ai_ticket import ForumTicket, ForumTicketMessage
+    
+    stmt = select(ForumTicket).where(ForumTicket.id == ticket_id, ForumTicket.user_id == db_user.id)
+    result = await db.execute(stmt)
+    ticket = result.scalars().first()
+    
+    if not ticket:
+        await callback.answer('Тикет не найден', show_alert=True)
+        return
+    
+    # Получаем историю сообщений
+    stmt_msgs = select(ForumTicketMessage).where(
+        ForumTicketMessage.ticket_id == ticket_id
+    ).order_by(ForumTicketMessage.created_at.asc()).limit(20)
+    msgs_result = await db.execute(stmt_msgs)
+    messages = msgs_result.scalars().all()
+    
+    status_emoji = '🟢' if ticket.status == 'open' else '🔴'
+    ai_emoji = '🤖' if ticket.ai_enabled else '👤'
+    
+    history_text = f'<b>🎫 Тикет #{ticket.id}</b> {status_emoji}\n'
+    history_text += f'<i>Режим: {ai_emoji}</i>\n\n'
+    
+    for msg in messages[-10:]:  # Последние 10 сообщений
+        role_icon = '👤' if msg.role == 'user' else ('🤖' if msg.role == 'ai' else '👨‍💻')
+        content = msg.content[:200] + '...' if len(msg.content) > 200 else msg.content
+        history_text += f'{role_icon} {content}\n\n'
+    
+    if not messages:
+        history_text += '<i>Нет сообщений</i>'
+    
+    kb = get_user_reply_kb(ticket.id, lang=db_user.language, show_call_manager=ticket.ai_enabled and ticket.status == 'open')
+    
+    try:
+        await callback.message.edit_text(history_text, reply_markup=kb, parse_mode='HTML')
+    except Exception:
+        await callback.message.answer(history_text, reply_markup=kb, parse_mode='HTML')
+    
+    await callback.answer()
+
+
+async def handle_reply_forum_ticket(
+    callback: types.CallbackQuery,
+    bot: Bot,
+    db: AsyncSession,
+    db_user: User,
+    state,
+) -> None:
+    """Пользователь нажал 'Ответить' — переводим в режим ожидания сообщения."""
+    data = callback.data or ''
+    ticket_id = int(data.replace('reply_forum_ticket_', ''))
+    
+    from app.database.models_ai_ticket import ForumTicket
+    
+    stmt = select(ForumTicket).where(ForumTicket.id == ticket_id, ForumTicket.user_id == db_user.id)
+    result = await db.execute(stmt)
+    ticket = result.scalars().first()
+    
+    if not ticket:
+        await callback.answer('Тикет не найден', show_alert=True)
+        return
+    
+    if ticket.status != 'open':
+        await callback.answer('Тикет закрыт', show_alert=True)
+        return
+    
+    texts = get_texts(db_user.language)
+    
+    # Сохраняем ticket_id в state для обработки следующего сообщения
+    await state.update_data(active_forum_ticket_id=ticket_id)
+    await state.set_state('ai_ticket_waiting_message')
+    
+    prompt_text = texts.t(
+        'AI_TICKET_REPLY_PROMPT',
+        '💬 Напишите ваш ответ:'
+    )
+    
+    cancel_kb = types.InlineKeyboardMarkup(inline_keyboard=[
+        [types.InlineKeyboardButton(text='❌ Отмена', callback_data='cancel_ticket_creation')]
+    ])
+    
+    try:
+        await callback.message.edit_text(prompt_text, reply_markup=cancel_kb, parse_mode='HTML')
+    except Exception:
+        await callback.message.answer(prompt_text, reply_markup=cancel_kb, parse_mode='HTML')
+    
+    await callback.answer()
+
+
+async def handle_my_tickets(
+    callback: types.CallbackQuery,
+    bot: Bot,
+    db: AsyncSession,
+    db_user: User,
+) -> None:
+    """Показать список тикетов пользователя."""
+    from app.database.models_ai_ticket import ForumTicket
+    
+    stmt = select(ForumTicket).where(ForumTicket.user_id == db_user.id).order_by(ForumTicket.created_at.desc()).limit(10)
+    result = await db.execute(stmt)
+    tickets = result.scalars().all()
+    
+    texts = get_texts(db_user.language)
+    
+    if not tickets:
+        text = texts.t('NO_TICKETS', '📭 У вас пока нет обращений.')
+        kb = types.InlineKeyboardMarkup(inline_keyboard=[
+            [types.InlineKeyboardButton(text=texts.get('MAIN_MENU_BUTTON', '🏠 Главное меню'), callback_data='menu_support')]
+        ])
+    else:
+        text = '<b>🎫 Ваши обращения:</b>\n\n'
+        kb_rows = []
+        for ticket in tickets:
+            status_emoji = '🟢' if ticket.status == 'open' else '🔴'
+            created = ticket.created_at.strftime('%d.%m.%Y') if ticket.created_at else ''
+            text += f'{status_emoji} <b>#{ticket.id}</b> ({created})\n'
+            kb_rows.append([
+                types.InlineKeyboardButton(
+                    text=f'{status_emoji} Тикет #{ticket.id}',
+                    callback_data=f'view_forum_ticket_{ticket.id}'
+                )
+            ])
+        kb_rows.append([types.InlineKeyboardButton(text=texts.get('MAIN_MENU_BUTTON', '🏠 Главное меню'), callback_data='menu_support')])
+        kb = types.InlineKeyboardMarkup(inline_keyboard=kb_rows)
+    
+    try:
+        await callback.message.edit_text(text, reply_markup=kb, parse_mode='HTML')
+    except Exception:
+        await callback.message.answer(text, reply_markup=kb, parse_mode='HTML')
+    
+    await callback.answer()
+
+
 def register_client_handlers(dp: Dispatcher) -> None:
-    """Регистрация callback 'Вызвать менеджера' и закрытия медиа."""
+    """Регистрация callback 'Вызвать менеджера', просмотр тикетов и закрытия медиа."""
     dp.callback_query.register(
         handle_call_manager,
         F.data.startswith('ai_ticket_call_manager:'),
@@ -422,4 +565,18 @@ def register_client_handlers(dp: Dispatcher) -> None:
     dp.callback_query.register(
         handle_close_media,
         F.data == 'ai_faq_media_close',
+    )
+    # Просмотр и ответ на тикет
+    dp.callback_query.register(
+        handle_view_forum_ticket,
+        F.data.startswith('view_forum_ticket_'),
+    )
+    dp.callback_query.register(
+        handle_reply_forum_ticket,
+        F.data.startswith('reply_forum_ticket_'),
+    )
+    # Мои тикеты
+    dp.callback_query.register(
+        handle_my_tickets,
+        F.data == 'my_tickets',
     )
