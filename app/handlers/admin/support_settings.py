@@ -529,6 +529,11 @@ def register_handlers(dp: Dispatcher):
     dp.callback_query.register(set_mode_both, F.data == 'admin_support_mode_both')
     # >>> AI_TICKET_INTEGRATION_START
     dp.callback_query.register(set_mode_ai_tiket, F.data == 'admin_support_mode_ai_tiket')
+    # DonMatteo-AI-Tiket: регистрация админ-хендлеров для провайдеров и FAQ
+    from app.modules.ai_ticket.handlers.ai_provider_admin import register_ai_provider_handlers
+    from app.modules.ai_ticket.handlers.faq_admin import register_faq_handlers
+    register_ai_provider_handlers(dp)
+    register_faq_handlers(dp)
     # <<< AI_TICKET_INTEGRATION_END
     dp.callback_query.register(start_edit_desc, F.data == 'admin_support_edit_desc')
     dp.callback_query.register(send_desc_copy, F.data == 'admin_support_send_desc')

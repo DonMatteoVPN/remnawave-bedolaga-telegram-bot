@@ -50,6 +50,7 @@ from app.handlers.admin import (
     servers as admin_servers,
     statistics as admin_statistics,
     subscriptions as admin_subscriptions,
+    support_settings as admin_support_settings,  # DonMatteo-AI-Tiket
     system_logs as admin_system_logs,
     tariffs as admin_tariffs,
     tickets as admin_tickets,
@@ -205,6 +206,8 @@ async def setup_bot() -> tuple[Bot, Dispatcher]:
     admin_welcome_text.register_welcome_text_handlers(dp)
     admin_tickets.register_handlers(dp)
     # >>> AI_TICKET_INTEGRATION_START
+    # DonMatteo-AI-Tiket: регистрация настроек поддержки с AI режимом
+    admin_support_settings.register_handlers(dp)
     # DonMatteo-AI-Tiket: register manager-side Forum group handler
     if settings.SUPPORT_AI_FORUM_ID:
         from app.modules.ai_ticket.handlers.manager import register_manager_handlers
