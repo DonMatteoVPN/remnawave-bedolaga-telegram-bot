@@ -1643,7 +1643,7 @@
   "WEBHOOK_CLOSE_BUTTON": "✖️ 关闭",
   "BALANCE_TOPPED_UP_CART_SUFFICIENT": "✅ 余额已充值 {amount}！\n\n💰 当前余额：{balance}\n\n🛒 您有一个已保存的购物车，金额为 {cart_total}\n余额足够完成订购。",
   "BALANCE_TOPPED_UP_CART_INSUFFICIENT": "✅ 余额已充值 {amount}！\n\n💰 当前余额：{balance}\n\n🛒 您有一个已保存的购物车，金额为 {cart_total}\n还差：{missing}",
-  "ADMIN_SUPPORT_SETTINGS_MODE_AI_TIKET": "🤖 AI工单",
+  "ADMIN_SUPPORT_SETTINGS_MODE_AI_TIKET": "🤖 DonMatteo AI-Тикет",
   "AI_TICKET_MESSAGE_RECEIVED": "📩 <b>消息已收到！</b>\n\n我们的AI助手正在分析您的问题，很快会回复。\n\n请稍候。",
   "AI_TICKET_UNAVAILABLE": "⚠️ <b>AI暂时不可用</b>\n\n抱歉，自动助手目前无法回复。您的消息已转发给经理。\n\n我们会尽快回复您。",
   "AI_TICKET_ERROR": "❌ <b>发生错误</b>\n\n无法获取AI响应。您的请求已转发给技术支持。\n\n对此带来的不便深表歉意。",
