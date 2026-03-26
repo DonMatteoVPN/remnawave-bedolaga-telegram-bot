@@ -1,6 +1,6 @@
 """add AI ticket tables
 
-Revision ID: 0050
+Revision ID: 0051
 Revises: 0049
 Create Date: 2026-03-02
 
@@ -18,7 +18,7 @@ from typing import Sequence, Union
 import sqlalchemy as sa
 from alembic import op
 
-revision: str = '0050'
+revision: str = '0051'
 down_revision: Union[str, None] = '0049'
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None

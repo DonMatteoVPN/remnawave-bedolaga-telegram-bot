@@ -149,7 +149,7 @@ class TicketSettingsUpdateRequest(BaseModel):
     sla_reminder_cooldown_minutes: int | None = Field(
         None, ge=1, le=120, description='Reminder cooldown (1-120 minutes)'
     )
-    support_system_mode: str | None = Field(None, description='Support mode: tickets, contact, both')
+    support_system_mode: str | None = Field(None, description='Support mode: tickets, contact, both, or ai_tiket')
     # Cabinet notifications settings
     cabinet_user_notifications_enabled: bool | None = Field(None, description='Enable user notifications in cabinet')
     cabinet_admin_notifications_enabled: bool | None = Field(None, description='Enable admin notifications in cabinet')
