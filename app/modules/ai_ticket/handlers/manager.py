@@ -87,7 +87,7 @@ async def handle_manager_message(message: types.Message, bot: Bot) -> None:
         if not ticket or not ticket.user:
             return  # Не тикетный топик
 
-        manager_name = message.from_user.full_name if message.from_user else 'Менеджер'
+        # manager_name определяется в notification_text
         user_chat_id = ticket.user.telegram_id
         user_lang = ticket.user.language if ticket.user else 'ru'
         texts = get_texts(user_lang)
@@ -282,18 +282,20 @@ async def _handle_topic_command(
 
 
 def register_manager_handlers(dp: Dispatcher) -> None:
-    """Регистрация обработчиков менеджера."""
-    forum_group_id_str = BotConfigurationService.get_current_value('SUPPORT_AI_FORUM_ID')
-    if not forum_group_id_str:
-        return
-
-    f_id = int(forum_group_id_str)
-
+    """Регистрация обработчиков менеджера.
+    
+    Регистрируем обработчик сообщений для ВСЕХ групп — 
+    фильтрация по forum_id происходит внутри handle_manager_message динамически.
+    Это позволяет изменять forum_id без перезапуска бота.
+    """
+    # Регистрируем для всех групп (forum), фильтрация внутри обработчика
     dp.message.register(
         handle_manager_message,
-        F.chat.id == f_id,
+        F.chat.type.in_(['supergroup', 'group']),  # Только группы
+        F.message_thread_id.is_not(None),  # Только топики форума
     )
 
+    # Callback кнопки управления тикетом
     dp.callback_query.register(
         handle_manager_callback,
         F.data.startswith('ai_ticket_close:') | F.data.startswith('ai_ticket_toggle_ai:'),

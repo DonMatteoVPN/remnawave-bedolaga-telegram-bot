@@ -457,6 +457,15 @@ async def _create_standard_ticket_fallback(
 
 
 async def show_my_tickets(callback: types.CallbackQuery, db_user: User, db: AsyncSession):
+    # >>> AI_TICKET_INTEGRATION: Проверяем режим и перенаправляем на AI-тикеты
+    from app.services.support_settings_service import SupportSettingsService
+    mode = SupportSettingsService.get_system_mode()
+    if mode == 'ai_tiket':
+        from app.modules.ai_ticket.handlers.client import handle_my_tickets
+        await handle_my_tickets(callback, callback.bot, db, db_user)
+        return
+    # <<< AI_TICKET_INTEGRATION
+    
     texts = get_texts(db_user.language)
 
     # Определяем текущую страницу
